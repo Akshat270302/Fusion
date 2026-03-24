@@ -27,6 +27,8 @@ from ..models import (
     HostelFine,
     HostelTransactionHistory,
     HostelHistory,
+    FineCategory,
+    FineStatus,
 )
 
 
@@ -255,23 +257,62 @@ class UpdateLeaveStatusSerializer(serializers.Serializer):
 # ══════════════════════════════════════════════════════════════
 
 class HostelComplaintSerializer(serializers.ModelSerializer):
+    student_id = serializers.CharField(source='student.id.user.username', read_only=True)
+    hostel_id = serializers.CharField(source='hall.hall_id', read_only=True)
+    hostel_name = serializers.CharField(source='hall.hall_name', read_only=True)
+    escalated_by_username = serializers.CharField(source='escalated_by.username', read_only=True, allow_null=True)
+    resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True, allow_null=True)
+    reassigned_to_username = serializers.CharField(source='reassigned_to.id.user.username', read_only=True, allow_null=True)
+
     class Meta:
         model = HostelComplaint
-        fields = ['id', 'hall_name', 'student_name', 'roll_number', 'description', 'contact_number']
-        read_only_fields = ['id']
+        fields = [
+            'id',
+            'student',
+            'hall',
+            'student_id',
+            'hostel_id',
+            'hostel_name',
+            'title',
+            'description',
+            'status',
+            'escalation_reason',
+            'escalated_by',
+            'escalated_by_username',
+            'escalated_at',
+            'resolution_notes',
+            'resolved_by',
+            'resolved_by_username',
+            'resolved_at',
+            'reassigned_to',
+            'reassigned_to_username',
+            'reassignment_instructions',
+            'reassigned_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'student', 'hall', 'status', 
+            'escalated_by', 'escalated_at', 
+            'resolved_by', 'resolved_at',
+            'reassigned_to', 'reassigned_at',
+            'created_at', 'updated_at'
+        ]
 
 
 class ComplaintCreateSerializer(serializers.Serializer):
-    hall_name = serializers.CharField(max_length=100)
-    student_name = serializers.CharField(max_length=100)
-    roll_number = serializers.CharField(max_length=20)
+    title = serializers.CharField(max_length=255)
     description = serializers.CharField()
-    contact_number = serializers.CharField(max_length=15)
 
-    def validate_contact_number(self, value):
-        if not re.match(r'^\+?1?\d{9,15}$', value):
-            raise serializers.ValidationError("Enter a valid contact number.")
-        return value
+    def validate_title(self, value):
+        if len(value.strip()) < 3:
+            raise serializers.ValidationError("Complaint title must be at least 3 characters.")
+        return value.strip()
+
+    def validate_description(self, value):
+        if len(value.strip()) < 10:
+            raise serializers.ValidationError("Complaint description must be at least 10 characters.")
+        return value.strip()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -281,26 +322,33 @@ class ComplaintCreateSerializer(serializers.Serializer):
 class HostelFineSerializer(serializers.ModelSerializer):
     student_roll_no = serializers.CharField(source='student.id.id', read_only=True)
     hall_name = serializers.CharField(source='hall.hall_name', read_only=True)
+    caretaker_name = serializers.CharField(source='caretaker.id.user.get_full_name', read_only=True, allow_null=True)
 
     class Meta:
         model = HostelFine
-        fields = ['fine_id', 'student', 'student_roll_no', 'hall', 'hall_name', 'student_name', 'amount', 'status', 'reason']
-        read_only_fields = ['fine_id']
+        fields = ['fine_id', 'student', 'student_roll_no', 'student_name', 'caretaker_name', 'hall', 'hall_name', 'amount', 'category', 'status', 'reason', 'evidence', 'created_at', 'updated_at']
+        read_only_fields = ['fine_id', 'created_at', 'updated_at']
 
 
 class ImposeFineSerializer(serializers.Serializer):
     student_id = serializers.CharField(max_length=20)
-    student_name = serializers.CharField(max_length=100)
-    hall_id = serializers.IntegerField()
-    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0.01)
+    category = serializers.ChoiceField(choices=FineCategory.choices)
     reason = serializers.CharField()
+    evidence = serializers.FileField(required=False, allow_null=True)
 
 
-class UpdateFineSerializer(serializers.Serializer):
-    fine_id = serializers.IntegerField()
-    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False)
-    status = serializers.ChoiceField(choices=['Pending', 'Paid'], required=False)
-    reason = serializers.CharField(required=False)
+class ImposeFineResponseSerializer(serializers.ModelSerializer):
+    caretaker_name = serializers.CharField(source='caretaker.id.user.get_full_name', read_only=True)
+    hall_name = serializers.CharField(source='hall.hall_name', read_only=True)
+
+    class Meta:
+        model = HostelFine
+        fields = ['fine_id', 'student', 'student_name', 'caretaker_name', 'hall_name', 'amount', 'category', 'status', 'reason', 'evidence', 'created_at']
+
+
+class UpdateFineStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=FineStatus.choices)
 
 
 # ══════════════════════════════════════════════════════════════

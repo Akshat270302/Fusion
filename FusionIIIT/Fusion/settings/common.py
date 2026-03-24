@@ -282,7 +282,12 @@ YOUTUBE_DATA_API_KEY = 'api_key'
 
 
 
-CORS_ORIGIN_ALLOW_ALL = True
+CORS_ORIGIN_ALLOW_ALL = False
+CORS_ALLOW_CREDENTIALS = True
+CORS_ORIGIN_WHITELIST = (
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+)
 ALLOW_PASS_RESET = True
 
 # session settings

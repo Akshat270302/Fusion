@@ -40,12 +40,63 @@ urlpatterns = [
 
     #for superUser
 
-    path('hostel-notices/', views.hostel_notice_board, name='hostel_notices_board'),
-    # //caretaker and warden can see all leaves
+    path('hostel-notices/', views.getNoticesController, name='hostel_notices_board'),
+    path('notices/', views.noticeBoardController, name='notice_board_api'),
+    path('create_notice/', views.createNoticeController, name='create_notice_api'),
+    path('student/notices/', views.student_notice_board, name='student_notice_board'),
+    # Leave management APIs (new)
+    path('leave/apply/', views.submitLeaveRequestController, name='submit_leave_request'),
+    path('leave/my-requests/', views.getStudentLeavesController, name='get_student_leave_requests'),
+    path('leave/pending/', views.getPendingLeavesController, name='get_pending_leave_requests'),
+    path('leave/update-status/', views.updateLeaveStatusController, name='update_leave_status_controller'),
+    # Student allotment APIs (new)
+    path('students/search/', views.searchStudentsController, name='search_students_controller'),
+    path('students/<str:student_id>/', views.getStudentController, name='get_student_controller'),
+    path('rooms/assign/', views.assignRoomController, name='assign_room_controller'),
+    path('rooms/my-room/', views.getStudentRoomController, name='get_student_room_controller'),
+    # Student allotment compatibility aliases for current frontend
+    path('students_get_students_info/', views.searchStudentsController, name='students_get_students_info_alias'),
+    path('caretaker_get_students_info/', views.searchStudentsController, name='caretaker_get_students_info_alias'),
+    # Fine management APIs (new)
+    path('fines/impose/', views.imposeFineController, name='impose_fine_controller'),
+    path('fines/hostel/', views.getHostelFinesController, name='get_hostel_fines_controller'),
+    path('fines/my-fines/', views.getStudentFinesController, name='get_student_fines_controller'),
+    # Attendance submission APIs (new)
+    path('attendance/students', views.getStudentsForAttendanceController, name='attendance_students'),
+    path('attendance/students/', views.getStudentsForAttendanceController, name='attendance_students_slash'),
+    path('attendance/submit', views.submitAttendanceController, name='attendance_submit'),
+    path('attendance/submit/', views.submitAttendanceController, name='attendance_submit_slash'),
+    path('attendance/my-attendance', views.getStudentAttendanceController, name='attendance_my_attendance'),
+    path('attendance/my-attendance/', views.getStudentAttendanceController, name='attendance_my_attendance_slash'),
+    # Complaint management APIs (new)
+    path('complaints/submit', views.submitComplaintController, name='submit_complaint'),
+    path('complaints/submit/', views.submitComplaintController, name='submit_complaint_slash'),
+    path('complaints/my', views.getStudentComplaintsController, name='get_student_complaints'),
+    path('complaints/my/', views.getStudentComplaintsController, name='get_student_complaints_slash'),
+    path('complaints/hostel', views.getHostelComplaintsController, name='get_hostel_complaints'),
+    path('complaints/hostel/', views.getHostelComplaintsController, name='get_hostel_complaints_slash'),
+    path('complaints/update-status', views.updateComplaintStatusController, name='update_complaint_status'),
+    path('complaints/update-status/', views.updateComplaintStatusController, name='update_complaint_status_slash'),
+    path('complaints/escalate', views.escalateComplaintController, name='escalate_complaint'),
+    path('complaints/escalate/', views.escalateComplaintController, name='escalate_complaint_slash'),
+    # Warden complaint management APIs
+    path('complaints/warden/escalated', views.getEscalatedComplaintsController, name='get_escalated_complaints'),
+    path('complaints/warden/escalated/', views.getEscalatedComplaintsController, name='get_escalated_complaints_slash'),
+    path('complaints/warden/all', views.getAllComplaintsForWardenController, name='get_all_complaints_for_warden'),
+    path('complaints/warden/all/', views.getAllComplaintsForWardenController, name='get_all_complaints_for_warden_slash'),
+    path('complaints/warden/resolve', views.resolveComplaintController, name='resolve_complaint'),
+    path('complaints/warden/resolve/', views.resolveComplaintController, name='resolve_complaint_slash'),
+    path('complaints/warden/reassign', views.reassignComplaintController, name='reassign_complaint'),
+    path('complaints/warden/reassign/', views.reassignComplaintController, name='reassign_complaint_slash'),
+    # Fine management APIs (frontend compatibility aliases)
+    path('impose-fine/', views.imposeFineController, name='impose_fine_alias'),
+    path('fetch-fine/', views.getHostelFinesController, name='fetch_fine_alias'),
+    path('update-fine-status/<int:fine_id>/', views.updateFineStatusController, name='update_fine_status_alias'),
+    # Caretaker student search API used by fine UI
+    path('caretaker_get_students_info/', views.getCaretakerStudentsController, name='caretaker_get_students_info'),
+    # Leave management APIs (legacy aliases kept for current frontend)
     path('all_leave_data/', views.all_leave_data, name='all_leave_data'),
-    # caretaker  or wardern can approve leave
-    path('update_leave_status/', views.update_leave_status, name='update_leave_status'),
-    # //apply for leave
+    path('update_leave_status/', views.updateLeaveStatusController, name='update_leave_status'),
     path('create_hostel_leave/', views.create_hostel_leave, name='create_hostel_leave'),
     
     # caretaker and warden can get all complaints
@@ -54,7 +105,7 @@ urlpatterns = [
     path('register_complaint/', views.PostComplaint.as_view(), name='PostComplaint'),
 
 #  Student can view his leave status
-    path('my_leaves/', views.my_leaves.as_view(), name='my_leaves'),
+    path('my_leaves/', views.getStudentLeavesController, name='my_leaves'),
     path('get_students/', views.get_students, name='get_students'),
 
 

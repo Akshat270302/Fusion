@@ -65,10 +65,9 @@ urlpatterns = [
     # FINE ENDPOINTS
     # ══════════════════════════════════════════════════════════════
     path('fines/impose/', views.impose_fine, name='impose-fine'),
-    path('fines/', views.list_fines, name='list-fines'),
-    path('fines/my/', views.my_fines, name='my-fines'),
-    path('fines/<int:fine_id>/update/', views.update_fine, name='update-fine'),
-    path('fines/<int:fine_id>/delete/', views.delete_fine, name='delete-fine'),
+    path('fines/my-fines/', views.my_fines, name='my-fines'),
+    path('fines/hostel/', views.hostel_fines, name='hostel-fines'),
+    path('fines/<int:fine_id>/status/', views.update_fine_status, name='update-fine-status'),
 
     # ══════════════════════════════════════════════════════════════
     # INVENTORY ENDPOINTS

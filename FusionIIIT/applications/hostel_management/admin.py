@@ -24,6 +24,7 @@ from .models import (
     HostelFine,
     HostelTransactionHistory,
     HostelHistory,
+    UserHostelMapping,
 )
 
 
@@ -55,6 +56,17 @@ class HallWardenAdmin(admin.ModelAdmin):
     def get_faculty_username(self, obj):
         return obj.faculty.id.user.username
     get_faculty_username.short_description = 'Faculty Username'
+
+
+@admin.register(UserHostelMapping)
+class UserHostelMappingAdmin(admin.ModelAdmin):
+    list_display = ['user', 'get_username', 'hall', 'role', 'updated_at']
+    list_filter = ['hall', 'role']
+    search_fields = ['user__id', 'user__user__username', 'hall__hall_id', 'hall__hall_name']
+
+    def get_username(self, obj):
+        return obj.user.user.username
+    get_username.short_description = 'Username'
 
 
 @admin.register(GuestRoomBooking)
@@ -137,9 +149,18 @@ class HostelLeaveAdmin(admin.ModelAdmin):
 
 @admin.register(HostelComplaint)
 class HostelComplaintAdmin(admin.ModelAdmin):
-    list_display = ['id', 'student_name', 'roll_number', 'hall_name', 'contact_number']
-    list_filter = ['hall_name']
-    search_fields = ['student_name', 'roll_number', 'description']
+    list_display = ['id', 'get_student', 'title', 'get_hall', 'status', 'created_at']
+    list_filter = ['hall', 'status', 'created_at']
+    search_fields = ['student__id__user__username', 'title', 'description']
+    readonly_fields = ['created_at', 'updated_at']
+    
+    def get_student(self, obj):
+        return f"{obj.student.id.user.username}"
+    get_student.short_description = 'Student'
+    
+    def get_hall(self, obj):
+        return obj.hall.hall_name
+    get_hall.short_description = 'Hall'
 
 
 @admin.register(HostelAllotment)

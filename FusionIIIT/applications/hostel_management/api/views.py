@@ -387,45 +387,62 @@ def impose_fine(request):
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     try:
-        fine = services.impose_fine(**serializer.validated_data)
-    except StudentNotFoundError as e:
-        return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
-    return Response(HostelFineSerializer(fine).data, status=status.HTTP_201_CREATED)
+        fine = services.impose_fine_service(
+            caretaker=request.user,
+            **serializer.validated_data
+        )
+    except (StudentNotFoundError, InvalidOperationError, UnauthorizedAccessError) as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(ImposeFineResponseSerializer(fine).data, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
 @authentication_classes([SessionAuthentication, TokenAuthentication])
 @permission_classes([IsAuthenticated])
 def my_fines(request):
-    """Get fines for current user."""
-    fines = selectors.get_fines_by_student(request.user.username)
-    serializer = HostelFineSerializer(fines, many=True)
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    """Get fines for current user (student only)."""
+    try:
+        fines = selectors.get_student_fines(student=request.user)
+        serializer = HostelFineSerializer(fines, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
 @authentication_classes([SessionAuthentication, TokenAuthentication])
 @permission_classes([IsAuthenticated])
-def list_fines(request):
-    """List all fines."""
-    fines = selectors.get_all_fines()
-    serializer = HostelFineSerializer(fines, many=True)
-    return Response(serializer.data, status=status.HTTP_200_OK)
+def hostel_fines(request):
+    """Get all fines for user's assigned hostel (caretaker/warden only)."""
+    try:
+        mapping = services.resolve_user_hall_mapping_service(user=request.user, strict=True)
+        if mapping.role not in [services.UserHostelMapping.ROLE_CARETAKER, services.UserHostelMapping.ROLE_WARDEN]:
+            return Response({"error": "Only caretakers and wardens can view hostel fines."}, status=status.HTTP_403_FORBIDDEN)
+
+        fines = selectors.get_hostel_fines(hall=mapping.hall)
+        serializer = HostelFineSerializer(fines, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['POST'])
+@api_view(['PATCH'])
 @authentication_classes([SessionAuthentication, TokenAuthentication])
 @permission_classes([IsAuthenticated])
-def update_fine(request, fine_id):
-    """Update a fine."""
-    serializer = UpdateFineSerializer(data=request.data)
+def update_fine_status(request, fine_id):
+    """Update fine payment status."""
+    serializer = UpdateFineStatusSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     try:
-        services.update_fine(fine_id=fine_id, **serializer.validated_data)
-    except FineNotFoundError as e:
-        return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
-    return Response({"message": "Fine updated."}, status=status.HTTP_200_OK)
+        fine = services.update_fine_status_service(
+            fine_id=fine_id,
+            new_status=serializer.validated_data['status'],
+            user=request.user
+        )
+        return Response(HostelFineSerializer(fine).data, status=status.HTTP_200_OK)
+    except (FineNotFoundError, InvalidOperationError, UnauthorizedAccessError) as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['DELETE'])

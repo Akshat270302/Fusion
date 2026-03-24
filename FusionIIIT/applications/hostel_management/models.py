@@ -55,10 +55,34 @@ class FineStatus(models.TextChoices):
     PAID = 'Paid', 'Paid'
 
 
+class FineCategory(models.TextChoices):
+    RULE_VIOLATION = 'Rule Violation', 'Rule Violation'
+    DAMAGE = 'Damage', 'Property Damage/Loss'
+    ATTENDANCE = 'Attendance', 'Attendance Violation'
+    ROOM_STANDARDS = 'Room Standards', 'Room Standards Violation'
+
+
 class LeaveStatus(models.TextChoices):
     PENDING = 'pending', 'Pending'
     APPROVED = 'Approved', 'Approved'
     REJECTED = 'Rejected', 'Rejected'
+
+
+class AttendanceStatus(models.TextChoices):
+    PRESENT = 'present', 'Present'
+    ABSENT = 'absent', 'Absent'
+
+
+class RoomAllocationStatus(models.TextChoices):
+    ACTIVE = 'active', 'Active'
+    VACATED = 'vacated', 'Vacated'
+
+
+class ComplaintStatus(models.TextChoices):
+    PENDING = 'pending', 'Pending'
+    IN_PROGRESS = 'in_progress', 'In Progress'
+    ESCALATED = 'escalated', 'Escalated'
+    RESOLVED = 'resolved', 'Resolved'
 
 
 # ══════════════════════════════════════════════════════════════
@@ -90,6 +114,45 @@ class Hall(models.Model):
 
     def __str__(self):
         return self.hall_id
+
+
+class UserHostelMapping(models.Model):
+    """
+    Stores a single hostel/hall association for each user in hostel module.
+
+    This extends user profile data without changing the global auth schema.
+    """
+    ROLE_STUDENT = 'student'
+    ROLE_WARDEN = 'warden'
+    ROLE_CARETAKER = 'caretaker'
+    ROLE_OTHER = 'other'
+
+    ROLE_CHOICES = (
+        (ROLE_STUDENT, 'Student'),
+        (ROLE_WARDEN, 'Warden'),
+        (ROLE_CARETAKER, 'Caretaker'),
+        (ROLE_OTHER, 'Other'),
+    )
+
+    user = models.OneToOneField(
+        ExtraInfo,
+        on_delete=models.CASCADE,
+        related_name='hostel_mapping',
+    )
+    hall = models.ForeignKey(
+        Hall,
+        on_delete=models.CASCADE,
+        related_name='mapped_users',
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_OTHER)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'hostel_management_userhostelmapping'
+        ordering = ['user_id']
+
+    def __str__(self):
+        return f"{self.user_id} -> {self.hall.hall_id}"
 
 
 class HallCaretaker(models.Model):
@@ -215,9 +278,11 @@ class HostelNoticeBoard(models.Model):
     """
     hall = models.ForeignKey(Hall, on_delete=models.CASCADE)
     posted_by = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
+    role = models.CharField(max_length=20, blank=True, default='')
     head_line = models.CharField(max_length=100)
     content = models.FileField(upload_to='hostel_management/', blank=True, null=True)
     description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'hostel_management_hostelnoticeboard'
@@ -240,12 +305,29 @@ class HostelStudentAttendence(models.Model):
     student_id = models.ForeignKey(Student, on_delete=models.CASCADE)
     date = models.DateField()
     present = models.BooleanField()
+    status = models.CharField(
+        max_length=10,
+        choices=AttendanceStatus.choices,
+        default=AttendanceStatus.PRESENT,
+    )
+    marked_by = models.ForeignKey(
+        Staff,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='hostel_attendance_marked',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'hostel_management_hostelstudentattendence'
+        constraints = [
+            models.UniqueConstraint(fields=['student_id', 'date'], name='unique_hostel_attendance_student_date'),
+        ]
+        ordering = ['-date', 'student_id__id__user__username']
 
     def __str__(self):
-        return str(self.student_id) + '->' + str(self.date) + '-' + str(self.present)
+        return str(self.student_id) + '->' + str(self.date) + '-' + str(self.status)
 
 
 class HallRoom(models.Model):
@@ -323,6 +405,8 @@ class HostelLeave(models.Model):
     """
     student_name = models.CharField(max_length=100)
     roll_num = models.CharField(max_length=20)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, null=True, blank=True)
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, null=True, blank=True)
     reason = models.TextField()
     phone_number = models.CharField(max_length=20, null=True, blank=True)
     start_date = models.DateField(default=timezone.now)
@@ -334,6 +418,8 @@ class HostelLeave(models.Model):
     )
     remark = models.TextField(blank=True, null=True)
     file_upload = models.FileField(upload_to='hostel_management/', null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
     class Meta:
         db_table = 'hostel_management_hostelleave'
@@ -345,19 +431,46 @@ class HostelLeave(models.Model):
 
 class HostelComplaint(models.Model):
     """
-    Records complaints filed by students.
+    Records complaints filed by students with hostel-scoped filtering.
+    
+    - Student submits complaint (title + description)
+    - Automatically linked to student's hostel
+    - Caretaker can view and update status
+    - Caretaker can escalate to warden with reason
+    - Warden can resolve with resolution notes
+    - Default status = pending
     """
-    hall_name = models.CharField(max_length=100)
-    student_name = models.CharField(max_length=100)
-    roll_number = models.CharField(max_length=20)
-    description = models.TextField()
-    contact_number = models.CharField(max_length=15)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, null=True, blank=True)
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, null=True, blank=True)
+    title = models.CharField(max_length=255, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    status = models.CharField(
+        max_length=20,
+        choices=ComplaintStatus.choices,
+        default=ComplaintStatus.PENDING
+    )
+    # Escalation tracking fields
+    escalation_reason = models.TextField(blank=True, default='', help_text='Reason for escalating to warden')
+    escalated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='escalated_complaints', help_text='Caretaker who escalated the complaint')
+    escalated_at = models.DateTimeField(null=True, blank=True, help_text='When the complaint was escalated')
+    # Resolution tracking fields
+    resolution_notes = models.TextField(blank=True, default='', help_text='Notes on how the complaint was resolved')
+    resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='resolved_complaints', help_text='Warden who resolved the complaint')
+    resolved_at = models.DateTimeField(null=True, blank=True, help_text='When the complaint was resolved')
+    # Reassignment tracking
+    reassigned_to = models.ForeignKey(Staff, on_delete=models.SET_NULL, null=True, blank=True, related_name='reassigned_complaints', help_text='Caretaker complaint was reassigned to')
+    reassignment_instructions = models.TextField(blank=True, default='', help_text='Instructions for caretaker on reassignment')
+    reassigned_at = models.DateTimeField(null=True, blank=True, help_text='When the complaint was reassigned')
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     class Meta:
         db_table = 'hostel_management_hostelcomplaint'
+        ordering = ['-created_at']
+        unique_together = [['student', 'title', 'created_at']]
 
     def __str__(self):
-        return f"Complaint from {self.student_name} in {self.hall_name}"
+        return f"Complaint #{self.id} - {self.title} by {self.student.id.user.username if self.student else 'Unknown'}"
 
 
 class HostelAllotment(models.Model):
@@ -439,22 +552,55 @@ class HostelFine(models.Model):
     """
     fine_id = models.AutoField(primary_key=True)
     student = models.ForeignKey(Student, on_delete=models.CASCADE)
-    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, default=1)
+    caretaker = models.ForeignKey(Staff, on_delete=models.SET_NULL, null=True, blank=True)
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE)
     student_name = models.CharField(max_length=100)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    category = models.CharField(
+        max_length=50,
+        choices=FineCategory.choices,
+        default=FineCategory.RULE_VIOLATION
+    )
     status = models.CharField(
         max_length=50,
         choices=FineStatus.choices,
         default=FineStatus.PENDING
     )
     reason = models.TextField()
+    evidence = models.FileField(upload_to='hostel/fines/', null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'hostel_management_hostelfine'
-        ordering = ['fine_id']
+        ordering = ['-created_at']
 
     def __str__(self):
         return f"{self.student_name}'s Fine - {self.amount} - {self.status}"
+
+
+class StudentRoomAllocation(models.Model):
+    """
+    Tracks room assignments for students.
+    """
+    student = models.ForeignKey(Student, on_delete=models.CASCADE)
+    room = models.ForeignKey(HallRoom, on_delete=models.CASCADE)
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE)
+    assigned_by = models.ForeignKey(Staff, on_delete=models.SET_NULL, null=True, blank=True)
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(
+        max_length=20,
+        choices=RoomAllocationStatus.choices,
+        default=RoomAllocationStatus.ACTIVE,
+    )
+    vacated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'hostel_management_studentroomallocation'
+        ordering = ['-assigned_at']
+
+    def __str__(self):
+        return f"{self.student.id.user.username} -> {self.room.block_no}-{self.room.room_no} ({self.status})"
 
 
 class HostelTransactionHistory(models.Model):

@@ -62,6 +62,8 @@ from .utils import add_to_room, remove_from_room
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.authentication import TokenAuthentication
 from django.http import JsonResponse
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
@@ -74,6 +76,9 @@ from django.contrib.auth.decorators import login_required
 from Fusion.settings.common import LOGIN_URL
 from django.shortcuts import get_object_or_404, redirect, render
 from django.db import transaction
+from . import services
+from . import selectors
+from .api.serializers import HostelComplaintSerializer
 from .forms import HallForm
 from notification.views import hostel_notifications
 from django.db.models.signals import post_save
@@ -537,10 +542,48 @@ def delete_notice(request):
       notice_id - stores id of the notice.
       notice - stores HostelNoticeBoard object related to 'notice_id'
     """
-    if request.method == 'POST':
-        notice_id = request.POST["dlt_notice"]
+    if request.method != 'POST':
+        return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+    notice_id = request.POST.get("dlt_notice") or request.POST.get("id")
+    if not notice_id and request.body:
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+            notice_id = payload.get('id')
+        except Exception:
+            notice_id = None
+
+    if not notice_id:
+        if request.headers.get('Content-Type', '').startswith('application/json'):
+            return JsonResponse({'error': 'Notice id is required.'}, status=400)
+        return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+    try:
+        mapping = services.resolve_user_hall_mapping_service(user=request.user, strict=True)
+    except services.UserHallMappingMissingError:
+        mapping = None
+
+    if not mapping or mapping.role not in ['warden', 'caretaker']:
+        if request.headers.get('Content-Type', '').startswith('application/json'):
+            return JsonResponse({'error': 'Only warden or caretaker can delete notices.'}, status=403)
+        return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+    try:
         notice = HostelNoticeBoard.objects.get(pk=notice_id)
-        notice.delete()
+    except HostelNoticeBoard.DoesNotExist:
+        if request.headers.get('Content-Type', '').startswith('application/json'):
+            return JsonResponse({'error': 'Notice not found.'}, status=404)
+        return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+    if notice.hall_id != mapping.hall_id:
+        if request.headers.get('Content-Type', '').startswith('application/json'):
+            return JsonResponse({'error': 'You can only delete notices from your hostel.'}, status=403)
+        return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+    notice.delete()
+
+    if request.headers.get('Content-Type', '').startswith('application/json'):
+        return JsonResponse({'message': 'Notice deleted successfully.'}, status=200)
     return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
 
 
@@ -829,65 +872,343 @@ class GeneratePDF(View):
 
 
 def hostel_notice_board(request):
-    notices = all().values('id', 'hall', 'posted_by',
-                           'head_line', 'content', 'description')
-    data = list(notices)
+    try:
+        notices = services.getAllNoticesService(user=request.user)
+    except services.UserHallMappingMissingError as exc:
+        return JsonResponse({'error': str(exc)}, status=403)
+    data = [
+        {
+            'id': notice.id,
+            'title': notice.head_line,
+            'hall_id': notice.hall.hall_id,
+            'hall_name': notice.hall.hall_name,
+            'head_line': notice.head_line,
+            'content': notice.description,
+            'description': notice.description,
+            'content_url': notice.content.url if notice.content else None,
+            'role': notice.role,
+            'created_at': notice.created_at.isoformat() if notice.created_at else None,
+            'posted_by': notice.posted_by.user.username,
+        }
+        for notice in notices
+    ]
     return JsonResponse(data, safe=False)
 
 
-@login_required
-def all_leave_data(request):
-    user_id = request.user.id  # Using request.user to get the user ID
+def _get_notice_publisher_context(user):
+    """Resolve whether user is warden/caretaker and fetch associated hall."""
     try:
-        # Assuming the user's profile is stored in extrainfo
-        staff = request.user.extrainfo.id
-    except AttributeError:
-        staff = None
-
-    if staff is not None and HallCaretaker.objects.filter(staff_id=staff).exists():
-        all_leave = HostelLeave.objects.all()
-        return render(request, 'hostelmanagement/all_leave_data.html', {'all_leave': all_leave})
-    else:
-        return HttpResponse('<script>alert("You are not authorized to access this page"); window.location.href = "/hostelmanagement/"</script>')
+        mapping = services.resolve_user_hall_mapping_service(user=user, strict=True)
+    except services.UserHallMappingMissingError:
+        return None, None, None
+    return mapping.role, mapping.hall, user.extrainfo
 
 
-@login_required
-def create_hostel_leave(request):
-    
-    if request.method == 'GET':
-        return render(request, 'hostelmanagement/create_leave.html')
-    elif request.method == 'POST':
-        data = request.POST  # Assuming you are sending form data via POST request
-        student_name = data.get('student_name')
-        roll_num = data.get('roll_num')
-        phone_number = data.get('phone_number')  # Retrieve phone number from form data
-        reason = data.get('reason')
-        start_date = data.get('start_date', timezone.now())
-        end_date = data.get('end_date')
-        
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def createNoticeController(request):
+    """Create notice - only allowed for warden and caretaker."""
+    return _create_notice_response(request)
 
-        # Create HostelLeave object and save to the database
-        leave = HostelLeave.objects.create(
-            student_name=student_name,
-            roll_num=roll_num,
-            phone_number=phone_number,  # Include phone number in the object creation
-            reason=reason,
-            start_date=start_date,
-            end_date=end_date,
-            
+
+def _create_notice_response(request):
+    """Internal create-notice handler shared by notice endpoints."""
+    title = (request.data.get('title') or request.data.get('headline') or request.data.get('head_line') or '').strip()
+    content = (request.data.get('content') or request.data.get('description') or '').strip()
+
+    if not title:
+        return Response({'error': 'title is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not content:
+        return Response({'error': 'content is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        notice = services.createNoticeService(
+            user=request.user,
+            title=title,
+            content=content,
         )
-        caretakers = HallCaretaker.objects.all()
-        sender = request.user
-        type = "leave_request"
-        for caretaker in caretakers:
-            try:
-                # Send notification
-                hostel_notifications(sender, caretaker.staff.id.user, type)
-            except Exception as e:
-                # Handle notification sending error
-                print(f"Error sending notification to caretaker {caretaker.staff.user.username}: {e}")
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
-        return JsonResponse({'message': 'HostelLeave created successfully'}, status=status.HTTP_201_CREATED)
+    return Response({
+        'id': notice.id,
+        'title': notice.head_line,
+        'content': notice.description,
+        'created_by': notice.posted_by.user.username,
+        'role': notice.role,
+        'created_at': notice.created_at.isoformat() if notice.created_at else None,
+        'hall_id': notice.hall.hall_id,
+        'hall_name': notice.hall.hall_name,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getNoticesController(request):
+    """Fetch notices for notice board consumers."""
+    return _get_notices_response(request)
+
+
+def _get_notices_response(request):
+    """Internal notice-list handler shared by notice endpoints."""
+    try:
+        notices = services.getAllNoticesService(user=request.user)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    data = [
+        {
+            'id': notice.id,
+            'title': notice.head_line,
+            'content': notice.description,
+            'created_by': notice.posted_by.user.username,
+            'role': notice.role,
+            'created_at': notice.created_at.isoformat() if notice.created_at else None,
+            'hall_id': notice.hall.hall_id,
+            'hall_name': notice.hall.hall_name,
+            'content_url': notice.content.url if notice.content else None,
+            # Keep legacy keys for compatibility with existing UI.
+            'head_line': notice.head_line,
+            'description': notice.description,
+            'posted_by': notice.posted_by.user.username,
+        }
+        for notice in notices
+    ]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def noticeBoardController(request):
+    """Single /notices endpoint supporting fetch and create operations."""
+    if request.method == 'GET':
+        return _get_notices_response(request)
+    return _create_notice_response(request)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def student_notice_board(request):
+    """Return notice board entries visible to the authenticated student."""
+    try:
+        notices = services.getAllNoticesService(user=request.user)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    payload = [
+        {
+            'id': notice.id,
+            'title': notice.head_line,
+            'description': notice.description,
+            'hall_id': notice.hall.hall_id,
+            'hall_name': notice.hall.hall_name,
+            'posted_by': notice.posted_by.user.username,
+            'content_url': notice.content.url if notice.content else None,
+        }
+        for notice in notices
+    ]
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitLeaveRequestController(request):
+    """Student submits leave request for own hostel."""
+    return _submit_leave_response(request)
+
+
+def _submit_leave_response(request):
+    """Internal submit-leave handler shared by new and legacy routes."""
+    payload = request.data
+    try:
+        leave = services.submitLeaveRequestService(
+            user=request.user,
+            student_name=payload.get('student_name'),
+            roll_num=payload.get('roll_num'),
+            phone_number=payload.get('phone_number'),
+            reason=payload.get('reason'),
+            start_date=payload.get('start_date'),
+            end_date=payload.get('end_date'),
+        )
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except (services.LeaveValidationError, services.StudentNotFoundError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        sender = request.user
+        leave_type = 'leave_request'
+        hostel_staff = HallCaretaker.objects.filter(hall=leave.hall)
+        for caretaker in hostel_staff:
+            hostel_notifications(sender, caretaker.staff.id.user, leave_type)
+    except Exception:
+        pass
+
+    return Response(
+        {
+            'message': 'Leave request submitted successfully.',
+            'leave': {
+                'id': leave.id,
+                'student_name': leave.student_name,
+                'roll_num': leave.roll_num,
+                'phone_number': leave.phone_number,
+                'reason': leave.reason,
+                'start_date': leave.start_date.isoformat(),
+                'end_date': leave.end_date.isoformat(),
+                'status': leave.status,
+                'hall_id': leave.hall.hall_id if leave.hall else None,
+            },
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentLeavesController(request):
+    """Student gets own leave requests scoped by own hostel."""
+    return _student_leaves_response(request)
+
+
+def _student_leaves_response(request):
+    """Internal student-leave-list handler shared by new and legacy routes."""
+    try:
+        leaves = services.getStudentLeaveRequestsService(user=request.user)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    payload = [
+        {
+            'id': leave.id,
+            'student_name': leave.student_name,
+            'roll_num': leave.roll_num,
+            'reason': leave.reason,
+            'phone_number': leave.phone_number,
+            'start_date': leave.start_date.isoformat(),
+            'end_date': leave.end_date.isoformat(),
+            'status': leave.status.lower() if leave.status else 'pending',
+            'remark': leave.remark,
+            'hall_id': leave.hall.hall_id if leave.hall else None,
+        }
+        for leave in leaves
+    ]
+    return Response({'leaves': payload}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getPendingLeavesController(request):
+    """Caretaker/warden gets all leave requests (pending + past) for own hostel."""
+    return _pending_leaves_response(request)
+
+
+def _pending_leaves_response(request):
+    """Internal caretaker-leave-list handler shared by new and legacy routes."""
+    try:
+        leaves = services.getPendingLeaveRequestsService(user=request.user)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    payload = [
+        {
+            'id': leave.id,
+            'student_name': leave.student_name,
+            'roll_num': leave.roll_num,
+            'reason': leave.reason,
+            'phone_number': leave.phone_number,
+            'start_date': leave.start_date.isoformat(),
+            'end_date': leave.end_date.isoformat(),
+            'status': leave.status.lower() if leave.status else 'pending',
+            'remark': leave.remark,
+            'hall_id': leave.hall.hall_id if leave.hall else None,
+        }
+        for leave in leaves
+    ]
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def updateLeaveStatusController(request):
+    """Caretaker/warden approves/rejects leave request for own hostel."""
+    return _update_leave_status_response(request)
+
+
+def _update_leave_status_response(request):
+    """Internal leave-status-update handler shared by new and legacy routes."""
+    leave_id = request.data.get('leave_id')
+    status_value = request.data.get('status')
+    remark = request.data.get('remark')
+
+    if not leave_id:
+        return Response({'error': 'leave_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not status_value:
+        return Response({'error': 'status is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        leave = services.updateLeaveStatusService(
+            user=request.user,
+            leave_id=int(leave_id),
+            status=status_value,
+            remark=remark,
+        )
+    except ValueError:
+        return Response({'error': 'leave_id must be an integer.'}, status=status.HTTP_400_BAD_REQUEST)
+    except services.LeaveNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.InvalidOperationError, services.UnauthorizedAccessError, services.UserHallMappingMissingError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        sender = request.user
+        recipient = User.objects.get(username=leave.roll_num)
+        notification_type = 'leave_accept' if leave.status.lower() == 'approved' else 'leave_reject'
+        hostel_notifications(sender, recipient, notification_type)
+    except Exception:
+        pass
+
+    return Response(
+        {
+            'status': 'success',
+            'leave': {
+                'id': leave.id,
+                'status': leave.status.lower(),
+                'remark': leave.remark,
+            },
+            'message': 'Leave status updated successfully.',
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# Backward-compatible endpoint aliases used by current frontend.
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_hostel_leave(request):
+    return _submit_leave_response(request)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def all_leave_data(request):
+    return _pending_leaves_response(request)
 
 # hostel_complaints_list caretaker can see all hostel complaints
 
@@ -1886,6 +2207,676 @@ def impose_fine_view(request):
         return render(request, 'hostelmanagement/impose_fine.html', {'students': students})
 
     return HttpResponse(f'<script>alert("You are not authorized to access this page"); window.location.href = "/hostelmanagement/"</script>')
+
+
+def _serialize_fine(fine):
+    caretaker_name = None
+    if fine.caretaker and fine.caretaker.id and fine.caretaker.id.user:
+        caretaker_name = fine.caretaker.id.user.username
+
+    status_value = fine.status.value if hasattr(fine.status, 'value') else str(fine.status)
+    category_value = fine.category.value if hasattr(fine.category, 'value') else str(fine.category)
+
+    return {
+        'fine_id': fine.fine_id,
+        'student_id': fine.student.id.user.username,
+        'student_name': fine.student_name,
+        'hall_id': fine.hall.hall_id,
+        'hall_name': fine.hall.hall_name,
+        'caretaker_name': caretaker_name,
+        'amount': float(fine.amount),
+        'category': category_value,
+        'status': status_value,
+        'reason': fine.reason,
+        'evidence': fine.evidence.url if fine.evidence else None,
+        'created_at': fine.created_at.isoformat() if fine.created_at else None,
+    }
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getCaretakerStudentsController(request):
+    """Return students in caretaker's hostel for fine search UI."""
+    try:
+        mapping = services.resolve_user_hall_mapping_service(user=request.user, strict=True)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    if mapping.role != 'caretaker':
+        return Response({'error': 'Only caretaker can access hostel student list.'}, status=status.HTTP_403_FORBIDDEN)
+
+    students = selectors.get_students_in_hall(hall=mapping.hall)
+    payload = [
+        {
+            'id__user__username': student.id.user.username,
+            'programme': student.programme,
+            'room_no': student.room_no,
+            'hall_no': student.hall_no,
+        }
+        for student in students
+    ]
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+# ══════════════════════════════════════════════════════════════
+# COMPLAINT MANAGEMENT CONTROLLERS
+# ══════════════════════════════════════════════════════════════
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitComplaintController(request):
+    """Submit a new complaint by student."""
+    try:
+        title = request.data.get('title', '').strip()
+        description = request.data.get('description', '').strip()
+        
+        if not title or not description:
+            return Response(
+                {'error': 'Both title and description are required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        complaint = services.submitComplaintService(
+            user=request.user,
+            title=title,
+            description=description,
+        )
+        
+        serializer = HostelComplaintSerializer(complaint)
+        return Response(
+            {
+                'message': 'Complaint submitted successfully.',
+                'complaint': serializer.data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentComplaintsController(request):
+    """Get current student's own complaints only."""
+    try:
+        complaints = services.getStudentComplaintsService(user=request.user)
+        serializer = HostelComplaintSerializer(complaints, many=True)
+        return Response(
+            {'complaints': serializer.data},
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getHostelComplaintsController(request):
+    """Get all complaints for caretaker's hostel."""
+    try:
+        complaints = services.getHostelComplaintsService(user=request.user)
+        serializer = HostelComplaintSerializer(complaints, many=True)
+        return Response(
+            {'complaints': serializer.data},
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as exc:
+        return Response(
+            {'error': f'Error fetching complaints: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def updateComplaintStatusController(request):
+    """Update complaint status by caretaker."""
+    try:
+        complaint_id = request.data.get('complaint_id')
+        new_status = request.data.get('status', '').strip().lower()
+        
+        if not complaint_id:
+            return Response(
+                {'error': 'Complaint ID is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not new_status:
+            return Response(
+                {'error': 'Status is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            complaint_id = int(complaint_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid complaint ID.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        complaint = services.updateComplaintStatusService(
+            user=request.user,
+            complaint_id=complaint_id,
+            status=new_status,
+        )
+        
+        serializer = HostelComplaintSerializer(complaint)
+        return Response(
+            {
+                'message': f'Complaint status updated to {new_status}.',
+                'complaint': serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def escalateComplaintController(request):
+    """Escalate complaint to warden by caretaker."""
+    try:
+        complaint_id = request.data.get('complaint_id')
+        escalation_reason = request.data.get('escalation_reason', '').strip()
+        remarks = request.data.get('remarks', '').strip()
+        
+        if not complaint_id:
+            return Response(
+                {'error': 'Complaint ID is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not escalation_reason:
+            return Response(
+                {'error': 'Escalation reason is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            complaint_id = int(complaint_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid complaint ID.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        complaint = services.escalateComplaintService(
+            user=request.user,
+            complaint_id=complaint_id,
+            escalation_reason=escalation_reason,
+            remarks=remarks,
+        )
+        
+        serializer = HostelComplaintSerializer(complaint)
+        return Response(
+            {
+                'message': 'Complaint successfully escalated to warden.',
+                'complaint': serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+
+# ══════════════════════════════════════════════════════════════
+# WARDEN COMPLAINT MANAGEMENT CONTROLLERS
+# ══════════════════════════════════════════════════════════════
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getEscalatedComplaintsController(request):
+    """Get all escalated complaints for warden."""
+    try:
+        complaints = services.getEscalatedComplaintsService(user=request.user)
+        serializer = HostelComplaintSerializer(complaints, many=True)
+        return Response(
+            {
+                'count': len(complaints),
+                'complaints': serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as exc:
+        return Response(
+            {'error': f'Error fetching complaints: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getAllComplaintsForWardenController(request):
+    """Get all complaints (all statuses) for warden complaint history."""
+    try:
+        complaints = services.getAllComplaintsForWardenService(user=request.user)
+        serializer = HostelComplaintSerializer(complaints, many=True)
+        return Response(
+            {
+                'count': len(complaints),
+                'complaints': serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as exc:
+        return Response(
+            {'error': f'Error fetching complaints: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def resolveComplaintController(request):
+    """Warden resolves an escalated complaint."""
+    try:
+        complaint_id = request.data.get('complaint_id')
+        resolution_notes = request.data.get('resolution_notes', '').strip()
+        
+        if not complaint_id:
+            return Response(
+                {'error': 'Complaint ID is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not resolution_notes:
+            return Response(
+                {'error': 'Resolution notes are required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            complaint_id = int(complaint_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid complaint ID.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        complaint = services.resolveComplaintService(
+            user=request.user,
+            complaint_id=complaint_id,
+            resolution_notes=resolution_notes,
+        )
+        
+        serializer = HostelComplaintSerializer(complaint)
+        return Response(
+            {
+                'message': 'Complaint successfully resolved.',
+                'complaint': serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as exc:
+        return Response(
+            {'error': f'Error resolving complaint: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def reassignComplaintController(request):
+    """Warden reassigns escalated complaint back to a caretaker."""
+    try:
+        complaint_id = request.data.get('complaint_id')
+        caretaker_id = request.data.get('caretaker_id')
+        instructions = request.data.get('instructions', '').strip()
+        
+        if not complaint_id:
+            return Response(
+                {'error': 'Complaint ID is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not caretaker_id:
+            return Response(
+                {'error': 'Caretaker ID is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            complaint_id = int(complaint_id)
+            caretaker_id = int(caretaker_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid complaint ID or caretaker ID.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        complaint = services.reassignComplaintService(
+            user=request.user,
+            complaint_id=complaint_id,
+            caretaker_id=caretaker_id,
+            instructions=instructions,
+        )
+        
+        serializer = HostelComplaintSerializer(complaint)
+        return Response(
+            {
+                'message': 'Complaint successfully reassigned to caretaker.',
+                'complaint': serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+    except services.UnauthorizedAccessError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except services.UserHallMappingMissingError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as exc:
+        return Response(
+            {'error': f'Error reassigning complaint: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+def _impose_fine_response(request):
+    student_id = request.data.get('student_id')
+    amount = request.data.get('amount')
+    reason = request.data.get('reason')
+    category = request.data.get('category')
+    evidence = request.FILES.get('evidence') if hasattr(request, 'FILES') else None
+
+    if not student_id:
+        return Response({'error': 'student_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if amount is None:
+        return Response({'error': 'amount is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not reason:
+        return Response({'error': 'reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        fine = services.imposeFineService(
+            user=request.user,
+            student_id=student_id,
+            amount=amount,
+            category=category,
+            reason=reason,
+            evidence=evidence,
+        )
+    except (services.InvalidOperationError, services.StudentNotFoundError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        recipient = User.objects.get(username=student_id)
+        hostel_notifications(request.user, recipient, 'fine_imposed')
+    except Exception:
+        pass
+
+    return Response({'message': 'Fine imposed successfully.', 'fine': _serialize_fine(fine)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def imposeFineController(request):
+    """Impose fine for student in caretaker's hostel."""
+    return _impose_fine_response(request)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getHostelFinesController(request):
+    """Fetch fines for caretaker's hostel only."""
+    try:
+        fines = services.getHostelFinesService(user=request.user)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    return Response({'fines': [_serialize_fine(fine) for fine in fines]}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentFinesController(request):
+    """Fetch fines visible to authenticated student only."""
+    try:
+        fines = services.getStudentFinesService(user=request.user)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response([_serialize_fine(fine) for fine in fines], status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def updateFineStatusController(request, fine_id):
+    """Caretaker updates fine status for own hostel."""
+    status_value = request.data.get('status')
+    if not status_value:
+        return Response({'error': 'status is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    normalized = str(status_value).strip().lower()
+    status_map = {
+        'pending': FineStatus.PENDING,
+        'paid': FineStatus.PAID,
+    }
+    mapped_status = status_map.get(normalized)
+    if not mapped_status:
+        return Response({'error': 'Invalid status. Use Pending or Paid.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        fine = services.update_fine_status_service(
+            fine_id=fine_id,
+            new_status=mapped_status,
+            user=request.user,
+        )
+    except services.FineNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError, services.InvalidOperationError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    return Response({'message': 'Fine status updated successfully.', 'fine': _serialize_fine(fine)}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def searchStudentsController(request):
+    """Search students in authenticated user's hostel."""
+    query = request.query_params.get('q') or request.query_params.get('search')
+    try:
+        students = services.searchStudentsService(user=request.user, query=query)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    return Response(students, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentController(request, student_id):
+    """Get single student details for room allotment modal."""
+    try:
+        student_data = services.getStudentDetailsService(user=request.user, student_id=student_id)
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    return Response(student_data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def assignRoomController(request):
+    """Assign room to a student within caretaker's hostel."""
+    student_id = request.data.get('student_id')
+    room_id = request.data.get('room_id')
+    room_label = request.data.get('room_no') or request.data.get('room_number')
+
+    if not student_id:
+        return Response({'error': 'student_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not room_id and not room_label:
+        return Response({'error': 'room_id or room_no is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        allocation = services.assignRoomService(
+            user=request.user,
+            student_id=student_id,
+            room_id=room_id,
+            room_label=room_label,
+        )
+    except (services.StudentNotFoundError, services.RoomNotFoundError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except (services.RoomNotAvailableError, services.RoomAssignmentError, ValueError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(
+        {
+            'message': 'Room assigned successfully.',
+            'allocation': {
+                'id': allocation.id,
+                'student_id': allocation.student.id.user.username,
+                'room_id': allocation.room.id,
+                'room_number': f"{allocation.room.block_no}-{allocation.room.room_no}",
+                'hostel_id': allocation.hall.hall_id,
+                'assigned_at': allocation.assigned_at.isoformat(),
+                'status': allocation.status,
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentRoomController(request):
+    """Get logged-in student's currently allotted room details."""
+    try:
+        room_data = services.getStudentRoomService(user=request.user)
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    return Response(room_data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentsForAttendanceController(request):
+    """Return all students from authenticated caretaker's hostel for attendance marking."""
+    try:
+        students = services.getStudentsForAttendanceService(user=request.user)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    return Response({'students': students}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitAttendanceController(request):
+    """Caretaker submits daily attendance for students in own hostel."""
+    payload = request.data
+    date_value = None
+
+    if isinstance(payload, list):
+        attendance_entries = payload
+        date_value = request.query_params.get('date')
+    elif isinstance(payload, dict):
+        attendance_entries = payload.get('attendance') or payload.get('records') or []
+        date_value = payload.get('date')
+    else:
+        return Response({'error': 'Invalid payload format.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        result = services.submitAttendanceService(
+            user=request.user,
+            attendance_entries=attendance_entries,
+            date_value=date_value,
+        )
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(
+        {
+            'message': 'Attendance submitted successfully.',
+            'summary': result,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def getStudentAttendanceController(request):
+    """Student views own attendance history only."""
+    try:
+        records = services.getStudentAttendanceService(user=request.user)
+    except services.StudentNotFoundError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    return Response({'attendance': records}, status=status.HTTP_200_OK)
 
 
 class HostelFineView(APIView):
