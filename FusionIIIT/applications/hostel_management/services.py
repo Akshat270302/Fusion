@@ -9,10 +9,11 @@ from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import User
 from django.utils import timezone
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from decimal import Decimal
 import re
 
-from applications.globals.models import Staff, Faculty
+from applications.globals.models import Staff, Faculty, HoldsDesignation
 from applications.academic_information.models import Student
 
 from . import selectors
@@ -28,13 +29,22 @@ from .models import (
     HallRoom,
     WorkerReport,
     HostelInventory,
+    HostelInventoryInspection,
+    HostelInventoryInspectionItem,
+    HostelResourceRequest,
+    HostelResourceRequestItem,
+    HostelInventoryUpdateLog,
     HostelLeave,
     HostelComplaint,
     HostelAllotment,
     StudentDetails,
     GuestRoom,
+    GuestRoomPolicy,
     HostelFine,
     StudentRoomAllocation,
+    HostelRoomGroup,
+    HostelRoomGroupMember,
+    RoomChangeRequest,
     HostelTransactionHistory,
     HostelHistory,
     BookingStatus,
@@ -42,9 +52,16 @@ from .models import (
     FineStatus,
     ComplaintStatus,
     FineCategory,
+    RoomChangeRequestStatus,
+    ReviewDecisionStatus,
     RoomAllocationStatus,
+    RoomStatus,
     RoomType,
     AttendanceStatus,
+    InventoryConditionStatus,
+    InventoryRequestType,
+    WorkflowStatus,
+    HostelOperationalStatus,
 )
 
 
@@ -117,6 +134,11 @@ class UnauthorizedAccessError(HostelManagementError):
     pass
 
 
+class RoomChangeRequestNotFoundError(HostelManagementError):
+    """Room change request does not exist."""
+    pass
+
+
 class BookingNotFoundError(HostelManagementError):
     """Booking does not exist."""
     pass
@@ -134,6 +156,11 @@ class FineNotFoundError(HostelManagementError):
 
 class InventoryNotFoundError(HostelManagementError):
     """Inventory item does not exist."""
+    pass
+
+
+class InventoryRequestNotFoundError(HostelManagementError):
+    """Inventory resource request does not exist."""
     pass
 
 
@@ -236,6 +263,23 @@ def resolve_user_hall_mapping_service(*, user, strict: bool = True):
     if strict:
         raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
     return None
+
+
+def resolve_hostel_rbac_role_service(*, user):
+    """Resolve canonical hostel RBAC role for authenticated user."""
+    if user.is_superuser:
+        return 'super_admin', None
+
+    designation_is_super_admin = HoldsDesignation.objects.filter(working=user).filter(
+        designation__name__in=['super_admin', 'SuperAdmin']
+    ).exists()
+    if designation_is_super_admin:
+        return 'super_admin', None
+
+    mapping = resolve_user_hall_mapping_service(user=user, strict=False)
+    if not mapping:
+        return 'other', None
+    return mapping.role, mapping
 
 
 # ══════════════════════════════════════════════════════════════
@@ -558,6 +602,687 @@ def reject_guest_room_booking(*, booking_id: int):
     return booking
 
 
+def _normalize_booking_status(status_value: str) -> str:
+    """Normalize status aliases to canonical booking statuses."""
+    status_value = (status_value or '').strip()
+    if not status_value:
+        return status_value
+
+    alias_map = {
+        'Confirmed': BookingStatus.APPROVED,
+        'Complete': BookingStatus.COMPLETED,
+    }
+    return alias_map.get(status_value, status_value)
+
+
+def _resolve_student_booking_context(*, user):
+    """Resolve student role and mapped hall for booking workflow."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can manage guest room requests.')
+    return mapping
+
+
+def _resolve_caretaker_booking_context(*, user):
+    """Resolve caretaker role and mapped hall for booking workflow."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
+        raise UnauthorizedAccessError('Only caretaker can manage guest room requests.')
+
+    caretaker = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+    if not caretaker:
+        raise UnauthorizedAccessError('Caretaker profile not found for current user.')
+    return mapping, caretaker
+
+
+def _get_or_create_guest_room_policy(*, hall):
+    policy, _ = selectors.get_or_create_guest_room_policy_by_hall(hall=hall)
+    return policy
+
+
+def _validate_booking_dates(*, start_date: date, end_date: date, policy):
+    """Validate booking dates against configured policy."""
+    if end_date <= start_date:
+        raise InvalidOperationError('Check-out date must be after check-in date.')
+
+    today = timezone.now().date()
+    advance_days = (start_date - today).days
+    duration_days = (end_date - start_date).days
+
+    if advance_days < policy.min_advance_days:
+        raise InvalidOperationError(
+            f'Booking must be requested at least {policy.min_advance_days} day(s) in advance.'
+        )
+
+    if advance_days > policy.max_advance_days:
+        raise InvalidOperationError(
+            f'Booking cannot be requested more than {policy.max_advance_days} day(s) in advance.'
+        )
+
+    if duration_days > policy.max_booking_duration_days:
+        raise InvalidOperationError(
+            f'Booking duration cannot exceed {policy.max_booking_duration_days} day(s).'
+        )
+
+
+def _calculate_booking_charge(*, policy, start_date: date, end_date: date, rooms_required: int) -> Decimal:
+    """Calculate booking total from policy and duration."""
+    days = max((end_date - start_date).days, 1)
+    charge_per_day = Decimal(str(policy.charge_per_day or 0))
+    return charge_per_day * Decimal(days) * Decimal(rooms_required)
+
+
+def _get_room_capacity_by_type(room_type: str) -> int:
+    room_type = (room_type or '').strip().lower()
+    return {
+        RoomType.SINGLE: 1,
+        RoomType.DOUBLE: 2,
+        RoomType.TRIPLE: 3,
+    }.get(room_type, 1)
+
+
+def checkGuestRoomAvailabilityService(
+    *,
+    user,
+    start_date: date,
+    end_date: date,
+    room_type: str,
+    rooms_required: int = 1,
+):
+    """Check available guest rooms for student's mapped hall and selected period."""
+    mapping = _resolve_student_booking_context(user=user)
+    policy = _get_or_create_guest_room_policy(hall=mapping.hall)
+
+    if not policy.feature_enabled:
+        raise InvalidOperationError('Guest room booking feature is currently disabled for this hostel.')
+
+    _validate_booking_dates(start_date=start_date, end_date=end_date, policy=policy)
+
+    if rooms_required <= 0:
+        raise InvalidOperationError('rooms_required must be at least 1.')
+
+    candidate_rooms = selectors.get_guest_rooms_by_hall_and_type(hall=mapping.hall, room_type=room_type)
+    available_rooms = []
+    for room in candidate_rooms:
+        if room.room_status != RoomStatus.AVAILABLE:
+            continue
+
+        overlapping = selectors.get_overlapping_bookings_for_room(
+            hall=mapping.hall,
+            guest_room_id=str(room.id),
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if overlapping.exists():
+            continue
+
+        available_rooms.append(room)
+
+    total_days = max((end_date - start_date).days, 1)
+    charge_per_day = Decimal(str(policy.charge_per_day or 0))
+    estimated_total = charge_per_day * Decimal(total_days) * Decimal(rooms_required)
+
+    return {
+        'hall_id': mapping.hall.hall_id,
+        'hall_name': mapping.hall.hall_name,
+        'available_count': len(available_rooms),
+        'rooms_required': rooms_required,
+        'is_available': len(available_rooms) >= rooms_required,
+        'rooms': [
+            {
+                'id': room.id,
+                'room': room.room,
+                'room_type': room.room_type,
+                'room_status': room.room_status,
+            }
+            for room in available_rooms
+        ],
+        'policy': {
+            'charge_per_day': float(charge_per_day),
+            'min_advance_days': policy.min_advance_days,
+            'max_advance_days': policy.max_advance_days,
+            'max_booking_duration_days': policy.max_booking_duration_days,
+            'max_concurrent_bookings_per_student': policy.max_concurrent_bookings_per_student,
+        },
+        'estimated_total_charge': float(estimated_total),
+    }
+
+
+@transaction.atomic
+def submitGuestRoomBookingService(
+    *,
+    user,
+    guest_name: str,
+    guest_phone: str,
+    guest_email: str,
+    guest_address: str,
+    rooms_required: int,
+    total_guest: int,
+    purpose: str,
+    arrival_date: date,
+    arrival_time,
+    departure_date: date,
+    departure_time,
+    nationality: str,
+    room_type: str,
+):
+    """Submit a guest room booking request by student."""
+    mapping = _resolve_student_booking_context(user=user)
+    policy = _get_or_create_guest_room_policy(hall=mapping.hall)
+
+    if not policy.feature_enabled:
+        raise InvalidOperationError('Guest room booking feature is currently disabled for this hostel.')
+
+    guest_name = (guest_name or '').strip()
+    guest_phone = (guest_phone or '').strip()
+    purpose = (purpose or '').strip()
+
+    if not guest_name:
+        raise InvalidOperationError('Guest name is required.')
+    if not guest_phone:
+        raise InvalidOperationError('Guest contact number is required.')
+    if not purpose:
+        raise InvalidOperationError('Purpose/reason is required.')
+
+    if rooms_required <= 0:
+        raise InvalidOperationError('rooms_required must be at least 1.')
+
+    _validate_booking_dates(start_date=arrival_date, end_date=departure_date, policy=policy)
+
+    per_room_capacity = _get_room_capacity_by_type(room_type)
+    if total_guest > rooms_required * per_room_capacity:
+        raise InvalidOperationError('Number of guests exceeds selected room capacity.')
+
+    active_bookings_count = selectors.get_student_active_bookings(user=user, hall=mapping.hall).count()
+    if active_bookings_count >= policy.max_concurrent_bookings_per_student:
+        raise InvalidOperationError(
+            'Maximum concurrent booking limit reached for this hostel policy.'
+        )
+
+    availability = checkGuestRoomAvailabilityService(
+        user=user,
+        start_date=arrival_date,
+        end_date=departure_date,
+        room_type=room_type,
+        rooms_required=rooms_required,
+    )
+    if not availability['is_available']:
+        raise RoomNotAvailableError('No rooms available for selected dates. Try alternate dates.')
+
+    total_charge = _calculate_booking_charge(
+        policy=policy,
+        start_date=arrival_date,
+        end_date=departure_date,
+        rooms_required=rooms_required,
+    )
+
+    booking = GuestRoomBooking.objects.create(
+        hall=mapping.hall,
+        intender=user,
+        guest_name=guest_name,
+        guest_phone=guest_phone,
+        guest_email=(guest_email or '').strip(),
+        guest_address=(guest_address or '').strip(),
+        rooms_required=rooms_required,
+        total_guest=total_guest,
+        purpose=purpose,
+        arrival_date=arrival_date,
+        arrival_time=arrival_time,
+        departure_date=departure_date,
+        departure_time=departure_time,
+        nationality=(nationality or '').strip(),
+        room_type=room_type,
+        status=BookingStatus.PENDING,
+        booking_charge_per_day=policy.charge_per_day,
+        total_charge=total_charge,
+    )
+
+    hall_caretaker = selectors.get_caretaker_by_hall(mapping.hall)
+    if hall_caretaker and hall_caretaker.staff and hall_caretaker.staff.id and hall_caretaker.staff.id.user:
+        try:
+            from notification.views import hostel_notifications
+            hostel_notifications(sender=user, recipient=hall_caretaker.staff.id.user, type='guestRoom_request')
+        except Exception:
+            pass
+
+    return booking
+
+
+def getStudentGuestBookingsService(*, user):
+    """Get booking history for authenticated student."""
+    _resolve_student_booking_context(user=user)
+    return selectors.get_bookings_by_user(user)
+
+
+def getStudentGuestBookingDetailService(*, user, booking_id: int):
+    """Get a single booking detail for authenticated student."""
+    _resolve_student_booking_context(user=user)
+    return selectors.get_booking_by_id_and_user(booking_id=booking_id, user=user)
+
+
+@transaction.atomic
+def modifyGuestRoomBookingService(
+    *,
+    user,
+    booking_id: int,
+    guest_name: str,
+    guest_phone: str,
+    guest_email: str,
+    guest_address: str,
+    rooms_required: int,
+    total_guest: int,
+    purpose: str,
+    arrival_date: date,
+    arrival_time,
+    departure_date: date,
+    departure_time,
+    nationality: str,
+    room_type: str,
+):
+    """Modify pending booking request by student and keep it in pending queue."""
+    mapping = _resolve_student_booking_context(user=user)
+    booking = selectors.get_booking_by_id_and_user(booking_id=booking_id, user=user)
+
+    if booking.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Booking does not belong to your hostel.')
+    if booking.status != BookingStatus.PENDING:
+        raise InvalidOperationError('Only pending requests can be modified.')
+
+    policy = _get_or_create_guest_room_policy(hall=mapping.hall)
+    _validate_booking_dates(start_date=arrival_date, end_date=departure_date, policy=policy)
+
+    capacity = _get_room_capacity_by_type(room_type)
+    if total_guest > rooms_required * capacity:
+        raise InvalidOperationError('Number of guests exceeds selected room capacity.')
+
+    availability = checkGuestRoomAvailabilityService(
+        user=user,
+        start_date=arrival_date,
+        end_date=departure_date,
+        room_type=room_type,
+        rooms_required=rooms_required,
+    )
+    if not availability['is_available']:
+        raise RoomNotAvailableError('No rooms available for selected dates. Try alternate dates.')
+
+    booking.guest_name = (guest_name or '').strip()
+    booking.guest_phone = (guest_phone or '').strip()
+    booking.guest_email = (guest_email or '').strip()
+    booking.guest_address = (guest_address or '').strip()
+    booking.rooms_required = rooms_required
+    booking.total_guest = total_guest
+    booking.purpose = (purpose or '').strip()
+    booking.arrival_date = arrival_date
+    booking.arrival_time = arrival_time
+    booking.departure_date = departure_date
+    booking.departure_time = departure_time
+    booking.nationality = (nationality or '').strip()
+    booking.room_type = room_type
+    booking.status = BookingStatus.PENDING
+    booking.modified_count = booking.modified_count + 1
+    booking.last_modified_at = timezone.now()
+    booking.total_charge = _calculate_booking_charge(
+        policy=policy,
+        start_date=arrival_date,
+        end_date=departure_date,
+        rooms_required=rooms_required,
+    )
+    booking.save()
+
+    hall_caretaker = selectors.get_caretaker_by_hall(mapping.hall)
+    if hall_caretaker and hall_caretaker.staff and hall_caretaker.staff.id and hall_caretaker.staff.id.user:
+        try:
+            from notification.views import hostel_notifications
+            hostel_notifications(sender=user, recipient=hall_caretaker.staff.id.user, type='guestRoom_modified')
+        except Exception:
+            pass
+
+    return booking
+
+
+@transaction.atomic
+def cancelGuestRoomBookingService(*, user, booking_id: int, cancel_reason: str = ''):
+    """Cancel booking by student before check-in date."""
+    _resolve_student_booking_context(user=user)
+    booking = selectors.get_booking_by_id_and_user(booking_id=booking_id, user=user)
+
+    allowed_statuses = [
+        BookingStatus.PENDING,
+        BookingStatus.APPROVED,
+        BookingStatus.CONFIRMED,
+    ]
+    if booking.status not in allowed_statuses:
+        raise InvalidOperationError('Only pending/approved bookings can be cancelled.')
+
+    today = timezone.now().date()
+    if booking.arrival_date <= today:
+        raise InvalidOperationError('Booking cannot be cancelled on/after check-in date.')
+
+    previous_status = booking.status
+    booking.status = BookingStatus.CANCELED
+    booking.cancel_reason = (cancel_reason or '').strip()
+    booking.canceled_at = timezone.now()
+    booking.save(update_fields=['status', 'cancel_reason', 'canceled_at', 'updated_at'])
+
+    if previous_status in [BookingStatus.APPROVED, BookingStatus.CONFIRMED] and booking.guest_room_id:
+        room = GuestRoom.objects.filter(id=booking.guest_room_id, hall=booking.hall).first()
+        if room:
+            room.vacant = True
+            room.occupied_till = None
+            room.room_status = RoomStatus.AVAILABLE
+            room.save(update_fields=['vacant', 'occupied_till', 'room_status'])
+
+    hall_caretaker = selectors.get_caretaker_by_hall(booking.hall)
+    if hall_caretaker and hall_caretaker.staff and hall_caretaker.staff.id and hall_caretaker.staff.id.user:
+        try:
+            from notification.views import hostel_notifications
+            hostel_notifications(sender=user, recipient=hall_caretaker.staff.id.user, type='guestRoom_cancelled')
+        except Exception:
+            pass
+
+    return booking
+
+
+def getCaretakerPendingGuestBookingsService(*, user):
+    """Get pending booking queue for caretaker's assigned hall."""
+    mapping, _ = _resolve_caretaker_booking_context(user=user)
+    return selectors.get_bookings_by_hall(
+        hall=mapping.hall,
+        statuses=[BookingStatus.PENDING],
+    )
+
+
+@transaction.atomic
+def decideGuestRoomBookingService(*, user, booking_id: int, decision: str, guest_room_id: int = None, comment: str = ''):
+    """Caretaker approves or rejects a pending booking request."""
+    mapping, caretaker = _resolve_caretaker_booking_context(user=user)
+
+    try:
+        booking = selectors.get_booking_by_id(booking_id)
+    except GuestRoomBooking.DoesNotExist:
+        raise BookingNotFoundError(f'Booking with ID {booking_id} not found.')
+
+    if booking.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Booking does not belong to your hostel.')
+    if booking.status != BookingStatus.PENDING:
+        raise InvalidOperationError('Only pending requests can be approved/rejected.')
+
+    normalized_decision = (decision or '').strip().lower()
+    if normalized_decision not in ['approved', 'rejected']:
+        raise InvalidOperationError('decision must be either approved or rejected.')
+
+    booking.decision_by = caretaker
+    booking.decision_comment = (comment or '').strip()
+    booking.decision_at = timezone.now()
+
+    if normalized_decision == 'approved':
+        if not guest_room_id:
+            raise InvalidOperationError('guest_room_id is required for approval.')
+
+        room = None
+        try:
+            room = selectors.get_guest_room_by_id(int(guest_room_id))
+        except Exception:
+            room = selectors.get_guest_room_by_hall_and_room_label(
+                hall=mapping.hall,
+                room_label=str(guest_room_id),
+            )
+        if not room:
+            raise RoomNotFoundError('Selected guest room was not found.')
+        if room.hall_id != mapping.hall_id:
+            raise UnauthorizedAccessError('Selected room does not belong to your hostel.')
+        if room.room_status != RoomStatus.AVAILABLE:
+            raise RoomNotAvailableError('Selected room is not available for booking.')
+
+        overlapping = selectors.get_overlapping_bookings_for_room(
+            hall=mapping.hall,
+            guest_room_id=str(room.id),
+            start_date=booking.arrival_date,
+            end_date=booking.departure_date,
+        )
+        if overlapping.exists():
+            raise RoomNotAvailableError('Selected room is already booked for the requested dates.')
+
+        booking.status = BookingStatus.APPROVED
+        booking.guest_room_id = str(room.id)
+        booking.rejection_reason = ''
+        booking.save()
+
+        room.vacant = False
+        room.occupied_till = booking.departure_date
+        room.room_status = RoomStatus.BOOKED
+        room.save(update_fields=['vacant', 'occupied_till', 'room_status'])
+
+        try:
+            from notification.views import hostel_notifications
+            hostel_notifications(sender=user, recipient=booking.intender, type='guestRoom_accept')
+        except Exception:
+            pass
+    else:
+        if not comment:
+            raise InvalidOperationError('Rejection reason/comment is required.')
+
+        booking.status = BookingStatus.REJECTED
+        booking.rejection_reason = comment.strip()
+        booking.guest_room_id = ''
+        booking.save()
+
+        try:
+            from notification.views import hostel_notifications
+            hostel_notifications(sender=user, recipient=booking.intender, type='guestRoom_reject')
+        except Exception:
+            pass
+
+    return booking
+
+
+def getCaretakerBookingsByStatusService(*, user, statuses):
+    """Get caretaker hall bookings filtered by statuses."""
+    mapping, _ = _resolve_caretaker_booking_context(user=user)
+    normalized = [_normalize_booking_status(value) for value in statuses]
+    return selectors.get_bookings_by_hall(hall=mapping.hall, statuses=normalized)
+
+
+@transaction.atomic
+def checkInGuestBookingService(*, user, booking_id: int, id_proof_type: str, id_proof_number: str, notes: str = ''):
+    """Caretaker checks in a guest for an approved booking."""
+    mapping, caretaker = _resolve_caretaker_booking_context(user=user)
+    try:
+        booking = selectors.get_booking_by_id(booking_id)
+    except GuestRoomBooking.DoesNotExist:
+        raise BookingNotFoundError(f'Booking with ID {booking_id} not found.')
+
+    if booking.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Booking does not belong to your hostel.')
+    if booking.status not in [BookingStatus.APPROVED, BookingStatus.CONFIRMED]:
+        raise InvalidOperationError('Only approved bookings can be checked in.')
+    if not booking.guest_room_id:
+        raise InvalidOperationError('No room has been assigned for this booking.')
+    if not id_proof_type or not id_proof_number:
+        raise InvalidOperationError('Guest identity proof type and number are required.')
+
+    room = GuestRoom.objects.filter(id=booking.guest_room_id, hall=booking.hall).first()
+    if not room:
+        raise RoomNotFoundError('Assigned guest room not found.')
+
+    booking.status = BookingStatus.CHECKED_IN
+    booking.checked_in_at = timezone.now()
+    booking.checked_in_by = caretaker
+    booking.id_proof_type = id_proof_type.strip()
+    booking.id_proof_number = id_proof_number.strip()
+    booking.checkin_notes = (notes or '').strip()
+    booking.save()
+
+    room.room_status = RoomStatus.CHECKED_IN
+    room.vacant = False
+    room.save(update_fields=['room_status', 'vacant'])
+    return booking
+
+
+@transaction.atomic
+def checkOutGuestBookingService(
+    *,
+    user,
+    booking_id: int,
+    inspection_notes: str = '',
+    damage_report: str = '',
+    damage_amount=0,
+):
+    """Caretaker checks out guest, releases room, and optionally imposes damage fine."""
+    mapping, caretaker = _resolve_caretaker_booking_context(user=user)
+    try:
+        booking = selectors.get_booking_by_id(booking_id)
+    except GuestRoomBooking.DoesNotExist:
+        raise BookingNotFoundError(f'Booking with ID {booking_id} not found.')
+
+    if booking.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Booking does not belong to your hostel.')
+    if booking.status != BookingStatus.CHECKED_IN:
+        raise InvalidOperationError('Only checked-in bookings can be checked out.')
+
+    try:
+        damage_amount_value = Decimal(str(damage_amount or 0))
+    except Exception:
+        raise InvalidOperationError('damage_amount must be a valid number.')
+
+    booking.checked_out_at = timezone.now()
+    booking.checked_out_by = caretaker
+    booking.inspection_notes = (inspection_notes or '').strip()
+    booking.damage_report = (damage_report or '').strip()
+    booking.damage_amount = damage_amount_value
+    booking.completed_with_damages = damage_amount_value > 0
+    booking.status = BookingStatus.COMPLETED
+    booking.save()
+
+    room = GuestRoom.objects.filter(id=booking.guest_room_id, hall=booking.hall).first()
+    if room:
+        room.vacant = True
+        room.occupied_till = None
+        room.room_status = RoomStatus.AVAILABLE
+        room.save(update_fields=['vacant', 'occupied_till', 'room_status'])
+
+    if damage_amount_value > 0:
+        student = selectors.get_student_by_username_or_none(booking.intender.username)
+        if student:
+            HostelFine.objects.create(
+                student=student,
+                caretaker=caretaker,
+                hall=mapping.hall,
+                student_name=(booking.intender.get_full_name() or booking.intender.username).strip(),
+                amount=damage_amount_value,
+                category=FineCategory.DAMAGE,
+                status=FineStatus.PENDING,
+                reason=(booking.damage_report or 'Damage reported during guest room checkout.').strip(),
+            )
+            try:
+                from notification.views import hostel_notifications
+                hostel_notifications(sender=user, recipient=booking.intender, type='fine_imposed')
+            except Exception:
+                pass
+
+    try:
+        from notification.views import hostel_notifications
+        hostel_notifications(sender=user, recipient=booking.intender, type='guestRoom_checkout')
+    except Exception:
+        pass
+
+    return booking
+
+
+def getGuestRoomPolicyService(*, user):
+    """Get configured guest room policy for caretaker's hall."""
+    mapping, _ = _resolve_caretaker_booking_context(user=user)
+    return _get_or_create_guest_room_policy(hall=mapping.hall)
+
+
+@transaction.atomic
+def upsertGuestRoomPolicyService(
+    *,
+    user,
+    feature_enabled: bool,
+    charge_per_day,
+    min_advance_days: int,
+    max_advance_days: int,
+    max_booking_duration_days: int,
+    max_concurrent_bookings_per_student: int,
+    eligibility_note: str = '',
+):
+    """Create/update guest room policy for caretaker's hall."""
+    mapping, _ = _resolve_caretaker_booking_context(user=user)
+    policy = _get_or_create_guest_room_policy(hall=mapping.hall)
+
+    if max_advance_days < min_advance_days:
+        raise InvalidOperationError('max_advance_days must be >= min_advance_days.')
+    if max_booking_duration_days <= 0:
+        raise InvalidOperationError('max_booking_duration_days must be > 0.')
+    if max_concurrent_bookings_per_student <= 0:
+        raise InvalidOperationError('max_concurrent_bookings_per_student must be > 0.')
+
+    try:
+        charge_value = Decimal(str(charge_per_day))
+    except Exception:
+        raise InvalidOperationError('charge_per_day must be a valid number.')
+    if charge_value < 0:
+        raise InvalidOperationError('charge_per_day cannot be negative.')
+
+    policy.feature_enabled = bool(feature_enabled)
+    policy.charge_per_day = charge_value
+    policy.min_advance_days = min_advance_days
+    policy.max_advance_days = max_advance_days
+    policy.max_booking_duration_days = max_booking_duration_days
+    policy.max_concurrent_bookings_per_student = max_concurrent_bookings_per_student
+    policy.eligibility_note = (eligibility_note or '').strip()
+    policy.save()
+    return policy
+
+
+def getGuestRoomBookingReportService(*, user, start_date: date, end_date: date):
+    """Generate aggregated guest room booking report for caretaker hall."""
+    mapping, _ = _resolve_caretaker_booking_context(user=user)
+    if end_date < start_date:
+        raise InvalidOperationError('end_date must be greater than or equal to start_date.')
+
+    bookings = selectors.get_bookings_by_hall_and_date_range(
+        hall=mapping.hall,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    status_counts = {}
+    total_revenue = Decimal('0')
+    damages_total = Decimal('0')
+    for booking in bookings:
+        status_key = _normalize_booking_status(booking.status)
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
+        total_revenue += Decimal(str(booking.total_charge or 0))
+        damages_total += Decimal(str(booking.damage_amount or 0))
+
+    return {
+        'hall_id': mapping.hall.hall_id,
+        'hall_name': mapping.hall.hall_name,
+        'from': start_date.isoformat(),
+        'to': end_date.isoformat(),
+        'total_bookings': len(bookings),
+        'status_breakdown': status_counts,
+        'revenue_generated': float(total_revenue),
+        'damage_fines_total': float(damages_total),
+        'bookings': [
+            {
+                'booking_id': booking.id,
+                'student': booking.intender.username,
+                'guest_name': booking.guest_name,
+                'room_id': booking.guest_room_id,
+                'arrival_date': booking.arrival_date.isoformat(),
+                'departure_date': booking.departure_date.isoformat(),
+                'status': _normalize_booking_status(booking.status),
+                'total_charge': float(booking.total_charge or 0),
+                'damage_amount': float(booking.damage_amount or 0),
+            }
+            for booking in bookings
+        ],
+    }
+
+
 # ══════════════════════════════════════════════════════════════
 # STAFF SCHEDULE SERVICES
 # ══════════════════════════════════════════════════════════════
@@ -681,6 +1406,94 @@ def get_student_notice_board_service(*, student_roll_number: str):
 # ══════════════════════════════════════════════════════════════
 # STUDENT ALLOTMENT SERVICES
 # ══════════════════════════════════════════════════════════════
+
+def _build_group_signature(*, students):
+    usernames = sorted(st.id.user.username.strip().lower() for st in students)
+    return '|'.join(usernames)
+
+
+def _serialize_group(group):
+    members = [
+        {
+            'student_id': membership.student.id.user.username,
+            'full_name': (membership.student.id.user.get_full_name() or membership.student.id.user.username).strip(),
+        }
+        for membership in group.memberships.select_related('student__id__user').all().order_by('student__id__user__username')
+    ]
+    return {
+        'group_id': group.id,
+        'hall_id': group.hall.hall_id if group.hall else '',
+        'members': members,
+        'is_auto_generated': group.is_auto_generated,
+        'room_number': (
+            f"{group.allotted_room.block_no}-{group.allotted_room.room_no}"
+            if group.allotted_room else ''
+        ),
+        'created_at': group.created_at.isoformat() if group.created_at else None,
+    }
+
+
+@transaction.atomic
+def createStudentGroupService(*, user, member_roll_numbers):
+    """Student creates a hostel group by adding 2 more members (self + 2)."""
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role != UserHostelMapping.ROLE_STUDENT or not mapping:
+        raise UnauthorizedAccessError('Only students can create groups.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    requested = [str(value).strip() for value in (member_roll_numbers or []) if str(value).strip()]
+    if len(requested) != 2:
+        raise InvalidOperationError('Exactly 2 roll numbers are required to form a group of 3.')
+
+    group_roll_numbers = [user.username] + requested
+    normalized_rolls = [value.lower() for value in group_roll_numbers]
+    if len(set(normalized_rolls)) != 3:
+        raise InvalidOperationError('Group members must be unique.')
+
+    students = list(selectors.get_students_by_usernames(usernames=group_roll_numbers))
+    student_by_username = {row.id.user.username.lower(): row for row in students}
+    missing = [value for value in normalized_rolls if value not in student_by_username]
+    if missing:
+        raise StudentNotFoundError(f"Student(s) not found: {', '.join(sorted(set(missing)))}")
+
+    selected_students = [student_by_username[key] for key in normalized_rolls]
+
+    for member in selected_students:
+        member_hall = _resolve_student_hall(student=member)
+        if not member_hall or member_hall.id != mapping.hall_id:
+            raise InvalidOperationError('All group members must belong to the same hostel.')
+        existing_membership = selectors.get_group_membership_for_student(student=member)
+        if existing_membership:
+            raise InvalidOperationError(f"Student {member.id.user.username} is already part of a group.")
+
+    signature = _build_group_signature(students=selected_students)
+    existing_group = selectors.get_group_by_signature(hall=mapping.hall, member_signature=signature)
+    if existing_group:
+        raise InvalidOperationError('This group already exists.')
+
+    group = HostelRoomGroup.objects.create(
+        hall=mapping.hall,
+        created_by=user,
+        is_auto_generated=False,
+        member_signature=signature,
+    )
+    HostelRoomGroupMember.objects.bulk_create(
+        [HostelRoomGroupMember(group=group, student=member) for member in selected_students]
+    )
+
+    try:
+        from notification.views import hostel_notifications
+
+        for member in selected_students:
+            hostel_notifications(sender=user, recipient=member.id.user, type='group_created')
+    except Exception:
+        pass
+
+    group = HostelRoomGroup.objects.prefetch_related('memberships__student__id__user').get(id=group.id)
+    return _serialize_group(group)
 
 def _hall_number_from_hall_id(hall_id: str):
     digits = ''.join(ch for ch in str(hall_id) if ch.isdigit())
@@ -851,6 +1664,24 @@ def getStudentRoomService(*, user):
         raise UnauthorizedAccessError('Student hostel mapping is invalid.')
 
     allocation = selectors.get_student_room_allocation_active(student=student)
+    roommates = []
+    if allocation:
+        roommate_allocations = StudentRoomAllocation.objects.filter(
+            hall=allocation.hall,
+            room=allocation.room,
+            status=RoomAllocationStatus.ACTIVE,
+        ).select_related('student__id__user')
+        for item in roommate_allocations:
+            if item.student_id == student.id:
+                continue
+            roommates.append(
+                {
+                    'student_id': item.student.id.user.username,
+                    'full_name': (item.student.id.user.get_full_name() or item.student.id.user.username).strip(),
+                }
+            )
+
+    membership = selectors.get_group_membership_for_student(student=student)
     return {
         'student_id': student.id.user.username,
         'room_number': student.room_no,
@@ -858,6 +1689,8 @@ def getStudentRoomService(*, user):
         'hostel_name': student_hall.hall_name,
         'allocation_date': allocation.assigned_at.isoformat() if allocation else None,
         'status': allocation.status if allocation else 'unassigned',
+        'roommates': roommates,
+        'group_id': membership.group_id if membership else None,
         # Keep existing student card fields for compatibility.
         'id__user__username': student.id.user.username,
         'programme': student.programme,
@@ -867,6 +1700,344 @@ def getStudentRoomService(*, user):
         'hall_id': student_hall.hall_id,
         'room_no': student.room_no or '',
     }
+
+
+# ══════════════════════════════════════════════════════════════
+# ROOM CHANGE REQUEST SERVICES (UC-013/014/015)
+# ══════════════════════════════════════════════════════════════
+
+def _serialize_room_change_request(request_obj):
+    return {
+        'id': request_obj.id,
+        'request_id': request_obj.request_id,
+        'student_username': request_obj.student.id.user.username,
+        'student_name': request_obj.student.id.user.get_full_name() or request_obj.student.id.user.username,
+        'hall_id': request_obj.hall.hall_id if request_obj.hall else '',
+        'hall_name': request_obj.hall.hall_name if request_obj.hall else '',
+        'current_room_no': request_obj.current_room_no,
+        'current_hall_id': request_obj.current_hall_id,
+        'reason': request_obj.reason,
+        'preferred_room': request_obj.preferred_room,
+        'preferred_hall': request_obj.preferred_hall,
+        'status': request_obj.status,
+        'caretaker_decision': request_obj.caretaker_decision,
+        'caretaker_remarks': request_obj.caretaker_remarks,
+        'caretaker_decided_at': request_obj.caretaker_decided_at.isoformat() if request_obj.caretaker_decided_at else None,
+        'warden_decision': request_obj.warden_decision,
+        'warden_remarks': request_obj.warden_remarks,
+        'warden_decided_at': request_obj.warden_decided_at.isoformat() if request_obj.warden_decided_at else None,
+        'allocated_room': (
+            f"{request_obj.allocated_room.block_no}-{request_obj.allocated_room.room_no}"
+            if request_obj.allocated_room else ''
+        ),
+        'allocation_notes': request_obj.allocation_notes,
+        'allocated_at': request_obj.allocated_at.isoformat() if request_obj.allocated_at else None,
+        'created_at': request_obj.created_at.isoformat() if request_obj.created_at else None,
+    }
+
+
+@transaction.atomic
+def submitRoomChangeRequestService(*, user, reason: str, preferred_room: str = '', preferred_hall: str = ''):
+    """Student submits room change request for current active allocation."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can submit room change requests.')
+
+    reason_value = (reason or '').strip()
+    if not reason_value:
+        raise InvalidOperationError('reason is required.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    active_allocation = selectors.get_student_room_allocation_active(student=student)
+    if not active_allocation:
+        raise InvalidOperationError('No active room allocation found. You cannot request room change.')
+
+    existing_pending = selectors.get_pending_room_change_by_student(student=student)
+    if existing_pending:
+        raise InvalidOperationError('You already have a pending room change request.')
+
+    request_obj = RoomChangeRequest.objects.create(
+        hall=mapping.hall,
+        student=student,
+        requested_by=user,
+        current_room_no=student.room_no or '',
+        current_hall_id=mapping.hall.hall_id,
+        reason=reason_value,
+        preferred_room=(preferred_room or '').strip(),
+        preferred_hall=(preferred_hall or '').strip(),
+        status=RoomChangeRequestStatus.PENDING,
+        caretaker_decision=ReviewDecisionStatus.PENDING,
+        warden_decision=ReviewDecisionStatus.PENDING,
+    )
+
+    caretaker = selectors.get_caretaker_by_hall(mapping.hall)
+    warden = selectors.get_warden_by_hall(mapping.hall)
+    try:
+        from notification.views import hostel_notifications
+        if caretaker and caretaker.staff and caretaker.staff.id and caretaker.staff.id.user:
+            hostel_notifications(sender=user, recipient=caretaker.staff.id.user, type='roomChange_request')
+        if warden and warden.faculty and warden.faculty.id and warden.faculty.id.user:
+            hostel_notifications(sender=user, recipient=warden.faculty.id.user, type='roomChange_request')
+    except Exception:
+        pass
+
+    return _serialize_room_change_request(request_obj)
+
+
+def getMyRoomChangeRequestsService(*, user):
+    """Student views own room change request history."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can view their room change requests.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    requests = selectors.get_room_change_requests_by_student(student=student)
+    return [_serialize_room_change_request(item) for item in requests]
+
+
+def getRoomChangeRequestsForReviewService(*, user, statuses=None):
+    """Caretaker/Warden dashboard view for room change requests in own hall."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role not in [UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN]:
+        raise UnauthorizedAccessError('Only caretaker/warden can view room change requests.')
+
+    normalized_statuses = statuses or [
+        RoomChangeRequestStatus.PENDING,
+        RoomChangeRequestStatus.APPROVED,
+    ]
+    requests = selectors.get_room_change_requests_by_hall_and_status(
+        hall=mapping.hall,
+        statuses=normalized_statuses,
+    )
+    return [_serialize_room_change_request(item) for item in requests]
+
+
+def _apply_room_change_review_decision(*, request_obj, decision: str, remarks: str):
+    decision_value = (decision or '').strip().capitalize()
+    remarks_value = (remarks or '').strip()
+    if decision_value not in [ReviewDecisionStatus.APPROVED, ReviewDecisionStatus.REJECTED]:
+        raise InvalidOperationError('decision must be Approved or Rejected.')
+    if decision_value == ReviewDecisionStatus.REJECTED and not remarks_value:
+        raise InvalidOperationError('remarks are required when rejecting a request.')
+    return decision_value, remarks_value
+
+
+def _pick_room_for_auto_room_change(*, request_obj):
+    """Pick a target room for automatic post-approval allocation."""
+    current_room_value = (request_obj.current_room_no or '').strip().lower()
+    preferred_room_value = (request_obj.preferred_room or '').strip()
+
+    if preferred_room_value:
+        match = re.match(r'^\s*([A-Za-z])\s*[-]?\s*([0-9]+)\s*$', preferred_room_value)
+        if match:
+            block_no, room_no = match.group(1).upper(), match.group(2)
+            preferred_room = selectors.get_room_by_hall_and_details(
+                hall=request_obj.hall,
+                block_no=block_no,
+                room_no=room_no,
+            )
+            if preferred_room and preferred_room.room_occupied < preferred_room.room_cap:
+                preferred_label = f"{preferred_room.block_no}-{preferred_room.room_no}".lower()
+                if preferred_label != current_room_value:
+                    return preferred_room
+
+    candidates = selectors.get_available_rooms_by_hall(request_obj.hall).order_by('block_no', 'room_no', 'id')
+    for room in candidates:
+        room_label = f"{room.block_no}-{room.room_no}".lower()
+        if room_label == current_room_value:
+            continue
+        return room
+
+    return None
+
+
+def _auto_allocate_after_dual_approval(*, request_obj):
+    """Allocate room automatically once both caretaker and warden approve."""
+    if request_obj.status != RoomChangeRequestStatus.APPROVED:
+        return False
+    if request_obj.caretaker_decision != ReviewDecisionStatus.APPROVED:
+        return False
+    if request_obj.warden_decision != ReviewDecisionStatus.APPROVED:
+        return False
+    if request_obj.allocated_room_id:
+        return True
+
+    caretaker = selectors.get_caretaker_by_hall(request_obj.hall)
+    if not caretaker or not caretaker.staff or not caretaker.staff.id or not caretaker.staff.id.user:
+        return False
+
+    target_room = _pick_room_for_auto_room_change(request_obj=request_obj)
+    if not target_room:
+        return False
+
+    allocation = assignRoomService(
+        user=caretaker.staff.id.user,
+        student_id=request_obj.student.id.user.username,
+        room_id=target_room.id,
+    )
+
+    request_obj.allocated_room = allocation.room
+    request_obj.allocation_notes = request_obj.allocation_notes or 'Auto allocated after dual approval.'
+    request_obj.allocated_at = timezone.now()
+    request_obj.status = RoomChangeRequestStatus.ALLOCATED
+    request_obj.save(update_fields=['allocated_room', 'allocation_notes', 'allocated_at', 'status', 'updated_at'])
+    return True
+
+
+@transaction.atomic
+def caretakerReviewRoomChangeRequestService(*, user, room_change_request_id: int, decision: str, remarks: str = ''):
+    """Caretaker reviews room change request as first reviewer."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
+        raise UnauthorizedAccessError('Only caretaker can submit caretaker review decision.')
+
+    try:
+        request_obj = selectors.get_room_change_request_by_id(request_id=room_change_request_id)
+    except RoomChangeRequest.DoesNotExist:
+        raise RoomChangeRequestNotFoundError('Room change request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Room change request does not belong to your hostel.')
+    if request_obj.status not in [RoomChangeRequestStatus.PENDING, RoomChangeRequestStatus.APPROVED]:
+        raise InvalidOperationError('Only pending/approved requests can be reviewed.')
+
+    decision_value, remarks_value = _apply_room_change_review_decision(
+        request_obj=request_obj,
+        decision=decision,
+        remarks=remarks,
+    )
+
+    caretaker_staff = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+    request_obj.caretaker_decision = decision_value
+    request_obj.caretaker_remarks = remarks_value
+    request_obj.caretaker_decided_by = caretaker_staff
+    request_obj.caretaker_decided_at = timezone.now()
+
+    if decision_value == ReviewDecisionStatus.REJECTED:
+        request_obj.status = RoomChangeRequestStatus.REJECTED
+    elif request_obj.warden_decision == ReviewDecisionStatus.APPROVED:
+        request_obj.status = RoomChangeRequestStatus.APPROVED
+    else:
+        request_obj.status = RoomChangeRequestStatus.PENDING
+
+    request_obj.save()
+    allocated = _auto_allocate_after_dual_approval(request_obj=request_obj)
+
+    try:
+        from notification.views import hostel_notifications
+        if request_obj.status == RoomChangeRequestStatus.REJECTED:
+            notif_type = 'roomChange_reject'
+        elif allocated or request_obj.status == RoomChangeRequestStatus.ALLOCATED:
+            notif_type = 'roomChange_allocated'
+        else:
+            notif_type = 'roomChange_reviewed'
+        hostel_notifications(sender=user, recipient=request_obj.requested_by, type=notif_type)
+    except Exception:
+        pass
+
+    return _serialize_room_change_request(request_obj)
+
+
+@transaction.atomic
+def wardenReviewRoomChangeRequestService(*, user, room_change_request_id: int, decision: str, remarks: str = ''):
+    """Warden reviews room change request for policy compliance."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_WARDEN:
+        raise UnauthorizedAccessError('Only warden can submit warden review decision.')
+
+    try:
+        request_obj = selectors.get_room_change_request_by_id(request_id=room_change_request_id)
+    except RoomChangeRequest.DoesNotExist:
+        raise RoomChangeRequestNotFoundError('Room change request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Room change request does not belong to your hostel.')
+    if request_obj.status not in [RoomChangeRequestStatus.PENDING, RoomChangeRequestStatus.APPROVED]:
+        raise InvalidOperationError('Only pending/approved requests can be reviewed.')
+
+    decision_value, remarks_value = _apply_room_change_review_decision(
+        request_obj=request_obj,
+        decision=decision,
+        remarks=remarks,
+    )
+
+    warden_faculty = selectors.get_faculty_by_extrainfo_id(user.extrainfo.id)
+    request_obj.warden_decision = decision_value
+    request_obj.warden_remarks = remarks_value
+    request_obj.warden_decided_by = warden_faculty
+    request_obj.warden_decided_at = timezone.now()
+
+    if decision_value == ReviewDecisionStatus.REJECTED:
+        request_obj.status = RoomChangeRequestStatus.REJECTED
+    elif request_obj.caretaker_decision == ReviewDecisionStatus.APPROVED:
+        request_obj.status = RoomChangeRequestStatus.APPROVED
+    else:
+        request_obj.status = RoomChangeRequestStatus.PENDING
+
+    request_obj.save()
+    allocated = _auto_allocate_after_dual_approval(request_obj=request_obj)
+
+    try:
+        from notification.views import hostel_notifications
+        if request_obj.status == RoomChangeRequestStatus.REJECTED:
+            notif_type = 'roomChange_reject'
+        elif allocated or request_obj.status == RoomChangeRequestStatus.ALLOCATED:
+            notif_type = 'roomChange_allocated'
+        else:
+            notif_type = 'roomChange_reviewed'
+        hostel_notifications(sender=user, recipient=request_obj.requested_by, type=notif_type)
+    except Exception:
+        pass
+
+    return _serialize_room_change_request(request_obj)
+
+
+@transaction.atomic
+def allocateApprovedRoomChangeRequestService(*, user, room_change_request_id: int, room_id=None, room_label: str = None, notes: str = ''):
+    """Caretaker allocates new room for fully approved room change request."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
+        raise UnauthorizedAccessError('Only caretaker can allocate room after approval.')
+
+    try:
+        request_obj = selectors.get_room_change_request_by_id(request_id=room_change_request_id)
+    except RoomChangeRequest.DoesNotExist:
+        raise RoomChangeRequestNotFoundError('Room change request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Room change request does not belong to your hostel.')
+    if request_obj.status != RoomChangeRequestStatus.APPROVED:
+        raise InvalidOperationError('Only approved requests can be allocated.')
+    if request_obj.caretaker_decision != ReviewDecisionStatus.APPROVED or request_obj.warden_decision != ReviewDecisionStatus.APPROVED:
+        raise InvalidOperationError('Both caretaker and warden must approve before allocation.')
+
+    student_username = request_obj.student.id.user.username
+    allocation = assignRoomService(
+        user=user,
+        student_id=student_username,
+        room_id=room_id,
+        room_label=room_label,
+    )
+
+    request_obj.allocated_room = allocation.room
+    request_obj.allocation_notes = (notes or '').strip()
+    request_obj.allocated_at = timezone.now()
+    request_obj.status = RoomChangeRequestStatus.ALLOCATED
+    request_obj.save(update_fields=['allocated_room', 'allocation_notes', 'allocated_at', 'status', 'updated_at'])
+
+    try:
+        from notification.views import hostel_notifications
+        hostel_notifications(sender=user, recipient=request_obj.requested_by, type='roomChange_allocated')
+    except Exception:
+        pass
+
+    return _serialize_room_change_request(request_obj)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1084,6 +2255,28 @@ def getStudentAttendanceService(*, user):
     ]
 
 
+def _sync_attendance_for_approved_leave(*, leave, acting_user):
+    """Upsert absence attendance records for the approved leave date range."""
+    if not leave.student_id or not leave.hall_id:
+        return
+
+    marker_staff = Staff.objects.filter(id=acting_user.extrainfo).first()
+    current_date = leave.start_date
+
+    while current_date <= leave.end_date:
+        HostelStudentAttendence.objects.update_or_create(
+            student_id=leave.student,
+            date=current_date,
+            defaults={
+                'hall': leave.hall,
+                'status': AttendanceStatus.ABSENT,
+                'present': False,
+                'marked_by': marker_staff,
+            },
+        )
+        current_date += timedelta(days=1)
+
+
 @transaction.atomic
 def updateLeaveStatusService(*, user, leave_id: int, status: str, remark: str = None):
     """Update leave request status for caretaker/warden within their hall."""
@@ -1106,6 +2299,10 @@ def updateLeaveStatusService(*, user, leave_id: int, status: str, remark: str = 
     leave.status = normalized_status
     leave.remark = (remark or '').strip() or None
     leave.save(update_fields=['status', 'remark', 'updated_at'])
+
+    if normalized_status == 'approved':
+        _sync_attendance_for_approved_leave(leave=leave, acting_user=user)
+
     return leave
 
 
@@ -1794,10 +2991,10 @@ def getStudentFinesService(*, user):
 
 
 def getHostelFinesService(*, user):
-    """Return fines for caretaker's hostel only."""
+    """Return fines for caretaker/warden assigned hostel."""
     mapping = resolve_user_hall_mapping_service(user=user, strict=True)
-    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
-        raise UnauthorizedAccessError('Only caretaker can view hostel fines.')
+    if mapping.role not in [UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN]:
+        raise UnauthorizedAccessError('Only caretaker or warden can view hostel fines.')
 
     return selectors.get_hostel_fines(hall=mapping.hall)
 
@@ -1896,7 +3093,8 @@ def create_inventory_item(
         hall_id=hall_id,
         inventory_name=inventory_name,
         cost=cost,
-        quantity=quantity
+        quantity=quantity,
+        condition_status=InventoryConditionStatus.GOOD,
     )
     return inventory
 
@@ -1923,6 +3121,414 @@ def delete_inventory_item(*, inventory_id: int):
     except HostelInventory.DoesNotExist:
         raise InventoryNotFoundError(f"Inventory item with ID {inventory_id} not found.")
     inventory.delete()
+
+
+def _ensure_inventory_role_access(*, user, allowed_roles):
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role not in allowed_roles:
+        raise UnauthorizedAccessError('You are not authorized for this inventory action.')
+    if mapping.hall.operational_status != HostelOperationalStatus.ACTIVE:
+        raise InvalidOperationError('Inventory workflow is available only for active hostels.')
+    return mapping
+
+
+def _serialize_inventory_item(item):
+    return {
+        'inventory_id': item.inventory_id,
+        'hall_id': item.hall.hall_id if item.hall else '',
+        'hall_name': item.hall.hall_name if item.hall else '',
+        'inventory_name': item.inventory_name,
+        'cost': float(item.cost),
+        'quantity': item.quantity,
+        'condition_status': item.condition_status,
+    }
+
+
+def getInventoryDashboardService(*, user):
+    """Return inventory list for authenticated hall (caretaker/warden) or all halls (superuser/admin)."""
+    if user.is_superuser:
+        inventory = [
+            item for item in selectors.get_all_inventory()
+            if item.hall and item.hall.operational_status == HostelOperationalStatus.ACTIVE
+        ]
+        return [_serialize_inventory_item(item) for item in inventory]
+
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN],
+    )
+    inventory = selectors.get_inventory_by_hall_instance(hall=mapping.hall)
+    return [_serialize_inventory_item(item) for item in inventory]
+
+
+@transaction.atomic
+def submitInventoryInspectionService(*, user, items, remarks: str = ''):
+    """UC-026: caretaker performs inspection and logs discrepancies."""
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER],
+    )
+
+    caretaker_staff = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+    inspection = HostelInventoryInspection.objects.create(
+        hall=mapping.hall,
+        caretaker=caretaker_staff,
+        remarks=(remarks or '').strip(),
+    )
+
+    if not isinstance(items, list) or not items:
+        raise InvalidOperationError('items list is required for inspection.')
+
+    for row in items:
+        inventory_id = row.get('inventory_id')
+        if not inventory_id:
+            raise InvalidOperationError('inventory_id is required in each inspection row.')
+
+        try:
+            inventory = selectors.get_inventory_by_id(int(inventory_id))
+        except HostelInventory.DoesNotExist:
+            raise InventoryNotFoundError(f'Inventory item with ID {inventory_id} not found.')
+
+        if inventory.hall_id != mapping.hall_id:
+            raise UnauthorizedAccessError('Inventory item does not belong to your hostel.')
+
+        expected_qty = inventory.quantity
+        observed_qty = int(row.get('observed_quantity', expected_qty))
+        observed_condition = row.get('observed_condition', inventory.condition_status)
+        if observed_condition not in InventoryConditionStatus.values:
+            raise InvalidOperationError('Invalid observed_condition value.')
+
+        discrepancy = bool(row.get('discrepancy', False))
+        if observed_qty != expected_qty or observed_condition != inventory.condition_status:
+            discrepancy = True
+
+        HostelInventoryInspectionItem.objects.create(
+            inspection=inspection,
+            inventory=inventory,
+            expected_quantity=expected_qty,
+            observed_quantity=max(observed_qty, 0),
+            observed_condition=observed_condition,
+            discrepancy=discrepancy,
+            discrepancy_remarks=(row.get('remarks') or '').strip(),
+        )
+
+    return {
+        'inspection_id': inspection.id,
+        'hall_id': mapping.hall.hall_id,
+        'created_at': inspection.created_at.isoformat(),
+        'remarks': inspection.remarks,
+    }
+
+
+def getInventoryInspectionsService(*, user):
+    """Get inspections for current hall (caretaker/warden) or all halls for superuser."""
+    if user.is_superuser:
+        # Aggregate all hall inspections by reading per hall inventory relation
+        payload = []
+        for hall in selectors.get_all_halls():
+            inspections = selectors.get_inventory_inspections_by_hall(hall=hall)
+            for inspection in inspections:
+                payload.append(_serialize_inventory_inspection(inspection))
+        return payload
+
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN],
+    )
+    inspections = selectors.get_inventory_inspections_by_hall(hall=mapping.hall)
+    return [_serialize_inventory_inspection(inspection) for inspection in inspections]
+
+
+def _serialize_inventory_inspection(inspection):
+    return {
+        'inspection_id': inspection.id,
+        'hall_id': inspection.hall.hall_id if inspection.hall else '',
+        'hall_name': inspection.hall.hall_name if inspection.hall else '',
+        'caretaker_username': (
+            inspection.caretaker.id.user.username
+            if inspection.caretaker and inspection.caretaker.id and inspection.caretaker.id.user
+            else ''
+        ),
+        'remarks': inspection.remarks,
+        'created_at': inspection.created_at.isoformat() if inspection.created_at else None,
+        'items': [
+            {
+                'inventory_id': row.inventory.inventory_id,
+                'inventory_name': row.inventory.inventory_name,
+                'expected_quantity': row.expected_quantity,
+                'observed_quantity': row.observed_quantity,
+                'observed_condition': row.observed_condition,
+                'discrepancy': row.discrepancy,
+                'discrepancy_remarks': row.discrepancy_remarks,
+            }
+            for row in inspection.items.all()
+        ],
+    }
+
+
+@transaction.atomic
+def submitResourceRequirementRequestService(*, user, request_type: str, items, justification: str = ''):
+    """UC-027: caretaker submits replacement/new/additional resource request."""
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER],
+    )
+
+    normalized_type = (request_type or '').strip().capitalize()
+    if normalized_type not in InventoryRequestType.values:
+        raise InvalidOperationError('request_type must be Replacement, New, or Additional.')
+    if not isinstance(items, list) or not items:
+        raise InvalidOperationError('At least one resource request item is required.')
+
+    caretaker_staff = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+    resource_request = HostelResourceRequest.objects.create(
+        hall=mapping.hall,
+        caretaker=caretaker_staff,
+        request_type=normalized_type,
+        justification=(justification or '').strip(),
+        status=WorkflowStatus.PENDING,
+    )
+
+    for row in items:
+        requested_qty = int(row.get('requested_quantity', 0))
+        if requested_qty <= 0:
+            raise InvalidOperationError('requested_quantity must be greater than 0.')
+
+        inventory_id = row.get('inventory_id')
+        inventory = None
+        item_name = (row.get('item_name') or '').strip()
+
+        if inventory_id:
+            try:
+                inventory = selectors.get_inventory_by_id(int(inventory_id))
+            except HostelInventory.DoesNotExist:
+                raise InventoryNotFoundError(f'Inventory item with ID {inventory_id} not found.')
+            if inventory.hall_id != mapping.hall_id:
+                raise UnauthorizedAccessError('Requested inventory item does not belong to your hostel.')
+            if not item_name:
+                item_name = inventory.inventory_name
+
+        if not item_name:
+            raise InvalidOperationError('item_name is required for each request row.')
+
+        HostelResourceRequestItem.objects.create(
+            request=resource_request,
+            inventory=inventory,
+            item_name=item_name,
+            requested_quantity=requested_qty,
+            remarks=(row.get('remarks') or '').strip(),
+        )
+
+    # Notify warden for first-level review.
+    warden = selectors.get_warden_by_hall(mapping.hall)
+    try:
+        from notification.views import hostel_notifications
+        if warden and warden.faculty and warden.faculty.id and warden.faculty.id.user:
+            hostel_notifications(sender=user, recipient=warden.faculty.id.user, type='inventory_request')
+        # Also notify caretaker that submission was registered successfully.
+        hostel_notifications(sender=user, recipient=user, type='inventory_request_submitted')
+    except Exception:
+        pass
+
+    return _serialize_resource_request(resource_request)
+
+
+def _serialize_resource_request(resource_request):
+    return {
+        'id': resource_request.id,
+        'hall_id': resource_request.hall.hall_id if resource_request.hall else '',
+        'hall_name': resource_request.hall.hall_name if resource_request.hall else '',
+        'request_type': resource_request.request_type,
+        'justification': resource_request.justification,
+        'status': resource_request.status,
+        'review_remarks': resource_request.review_remarks,
+        'reviewed_at': resource_request.reviewed_at.isoformat() if resource_request.reviewed_at else None,
+        'created_at': resource_request.created_at.isoformat() if resource_request.created_at else None,
+        'items': [
+            {
+                'item_id': item.id,
+                'inventory_id': item.inventory_id,
+                'item_name': item.item_name,
+                'requested_quantity': item.requested_quantity,
+                'remarks': item.remarks,
+            }
+            for item in resource_request.items.all()
+        ],
+    }
+
+
+def getResourceRequestsService(*, user):
+    """Caretaker sees own-hall requests; warden sees hall requests; superuser sees all."""
+    if user.is_superuser:
+        return [_serialize_resource_request(req) for req in selectors.get_all_resource_requests()]
+
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN],
+    )
+    requests = selectors.get_resource_requests_by_hall(hall=mapping.hall)
+    return [_serialize_resource_request(req) for req in requests]
+
+
+@transaction.atomic
+def reviewResourceRequestService(*, user, request_id: int, decision: str, remarks: str = ''):
+    """Warden/admin approves or rejects resource request."""
+    try:
+        resource_request = selectors.get_resource_request_by_id(request_id)
+    except HostelResourceRequest.DoesNotExist:
+        raise InventoryRequestNotFoundError('Resource request not found.')
+
+    normalized_decision = (decision or '').strip().capitalize()
+    if normalized_decision not in [WorkflowStatus.APPROVED, WorkflowStatus.REJECTED]:
+        raise InvalidOperationError('decision must be Approved or Rejected.')
+    if normalized_decision == WorkflowStatus.REJECTED and not (remarks or '').strip():
+        raise InvalidOperationError('remarks are required when rejecting a request.')
+
+    if user.is_superuser:
+        resource_request.reviewed_by_admin = user
+    else:
+        mapping = _ensure_inventory_role_access(
+            user=user,
+            allowed_roles=[UserHostelMapping.ROLE_WARDEN],
+        )
+        if resource_request.hall_id != mapping.hall_id:
+            raise UnauthorizedAccessError('Resource request does not belong to your hostel.')
+        resource_request.reviewed_by_warden = selectors.get_faculty_by_extrainfo_id(user.extrainfo.id)
+
+    resource_request.status = normalized_decision
+    resource_request.review_remarks = (remarks or '').strip()
+    resource_request.reviewed_at = timezone.now()
+    resource_request.save(update_fields=[
+        'status',
+        'review_remarks',
+        'reviewed_at',
+        'reviewed_by_warden',
+        'reviewed_by_admin',
+        'updated_at',
+    ])
+
+    # Notify caretaker.
+    try:
+        from notification.views import hostel_notifications
+        if resource_request.caretaker and resource_request.caretaker.id and resource_request.caretaker.id.user:
+            notif_type = 'inventory_request_approved' if normalized_decision == WorkflowStatus.APPROVED else 'inventory_request_rejected'
+            hostel_notifications(sender=user, recipient=resource_request.caretaker.id.user, type=notif_type)
+    except Exception:
+        pass
+
+    return _serialize_resource_request(resource_request)
+
+
+@transaction.atomic
+def auditedInventoryUpdateService(*, user, inventory_id: int, quantity=None, condition_status: str = None, reason: str = ''):
+    """UC-028: caretaker updates inventory and system records audit trail."""
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER],
+    )
+    try:
+        inventory = selectors.get_inventory_by_id(inventory_id)
+    except HostelInventory.DoesNotExist:
+        raise InventoryNotFoundError(f'Inventory item with ID {inventory_id} not found.')
+
+    if inventory.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Inventory item does not belong to your hostel.')
+
+    prev_qty = inventory.quantity
+    prev_condition = inventory.condition_status
+
+    if quantity is not None:
+        quantity = int(quantity)
+        if quantity < 0:
+            raise InvalidOperationError('quantity cannot be negative.')
+        inventory.quantity = quantity
+
+    if condition_status is not None:
+        normalized_condition = (condition_status or '').strip().capitalize()
+        if normalized_condition not in InventoryConditionStatus.values:
+            raise InvalidOperationError('Invalid condition_status value.')
+        inventory.condition_status = normalized_condition
+
+    inventory.save(update_fields=['quantity', 'condition_status'])
+
+    HostelInventoryUpdateLog.objects.create(
+        inventory=inventory,
+        hall=inventory.hall,
+        updated_by=user,
+        previous_quantity=prev_qty,
+        new_quantity=inventory.quantity,
+        previous_condition=prev_condition,
+        new_condition=inventory.condition_status,
+        reason=(reason or '').strip(),
+    )
+
+    return _serialize_inventory_item(inventory)
+
+
+def getInventoryUpdateLogsService(*, user):
+    """Return inventory update logs for hall scope or all (superuser)."""
+    logs = []
+    if user.is_superuser:
+        for hall in selectors.get_all_halls():
+            logs.extend(list(selectors.get_inventory_update_logs_by_hall(hall=hall)))
+    else:
+        mapping = _ensure_inventory_role_access(
+            user=user,
+            allowed_roles=[UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN],
+        )
+        logs = selectors.get_inventory_update_logs_by_hall(hall=mapping.hall)
+
+    return [
+        {
+            'id': row.id,
+            'inventory_id': row.inventory.inventory_id,
+            'inventory_name': row.inventory.inventory_name,
+            'hall_id': row.hall.hall_id,
+            'hall_name': row.hall.hall_name,
+            'previous_quantity': row.previous_quantity,
+            'new_quantity': row.new_quantity,
+            'previous_condition': row.previous_condition,
+            'new_condition': row.new_condition,
+            'reason': row.reason,
+            'updated_by': row.updated_by.username if row.updated_by else '',
+            'created_at': row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in logs
+    ]
+
+
+@transaction.atomic
+def createInventoryItemForCaretakerService(*, user, inventory_name: str, cost, quantity: int, condition_status: str = None):
+    """Create initial inventory rows for caretaker's mapped hostel."""
+    mapping = _ensure_inventory_role_access(
+        user=user,
+        allowed_roles=[UserHostelMapping.ROLE_CARETAKER],
+    )
+
+    name = (inventory_name or '').strip()
+    if not name:
+        raise InvalidOperationError('inventory_name is required.')
+
+    quantity = int(quantity)
+    if quantity < 0:
+        raise InvalidOperationError('quantity cannot be negative.')
+
+    parsed_cost = float(cost)
+    if parsed_cost < 0:
+        raise InvalidOperationError('cost cannot be negative.')
+
+    normalized_condition = (condition_status or InventoryConditionStatus.GOOD).strip().capitalize()
+    if normalized_condition not in InventoryConditionStatus.values:
+        raise InvalidOperationError('Invalid condition_status value.')
+
+    inventory = HostelInventory.objects.create(
+        hall=mapping.hall,
+        inventory_name=name,
+        cost=parsed_cost,
+        quantity=quantity,
+        condition_status=normalized_condition,
+    )
+    return _serialize_inventory_item(inventory)
 
 
 # ══════════════════════════════════════════════════════════════

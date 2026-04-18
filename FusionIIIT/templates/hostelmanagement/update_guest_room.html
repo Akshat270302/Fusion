@@ -1,28 +1,493 @@
-{% load static %}
 {% block request_list %}
-<div class="ui secondary menu">
-    <div class="ui floating dropdown labeled icon button">
-    <i class="clipboard icon"></i>
-    <span class="text">Pending Requests</span>
-        <div class="menu">
-        {% for hall in all_hall %}
-            <a class="{% if hall.hall_id == 'vivekananda' %}item active{% else %}item{% endif %}" data-tab={{hall.hall_id}}_guest_room_request>
-                {{hall.hall_id}} requests
-            </a>
-        {% endfor %}
+<div class="ui segment">
+  <h3 class="ui header">Guest Room Management (Caretaker)</h3>
+
+  <div class="ui top attached tabular menu">
+    <a class="active item" data-tab="pending-requests">Pending Requests</a>
+    <a class="item" data-tab="check-in">Check-In</a>
+    <a class="item" data-tab="check-out">Check-Out</a>
+    <a class="item" data-tab="settings">Settings</a>
+    <a class="item" data-tab="reports">Reports</a>
+  </div>
+
+  <div class="ui bottom attached active tab segment" data-tab="pending-requests">
+    <button class="ui button" id="refresh-pending-bookings">Refresh Pending</button>
+    <div id="pending-feedback" class="ui hidden message" style="margin-top: 1rem;"></div>
+    <div id="pending-bookings-list" class="ui divided items" style="margin-top: 1rem;"></div>
+  </div>
+
+  <div class="ui bottom attached tab segment" data-tab="check-in">
+    <button class="ui button" id="refresh-checkin-bookings">Refresh Approved</button>
+    <div id="checkin-feedback" class="ui hidden message" style="margin-top: 1rem;"></div>
+    <div id="checkin-bookings-list" class="ui divided items" style="margin-top: 1rem;"></div>
+  </div>
+
+  <div class="ui bottom attached tab segment" data-tab="check-out">
+    <button class="ui button" id="refresh-checkout-bookings">Refresh Checked-In</button>
+    <div id="checkout-feedback" class="ui hidden message" style="margin-top: 1rem;"></div>
+    <div id="checkout-bookings-list" class="ui divided items" style="margin-top: 1rem;"></div>
+  </div>
+
+  <div class="ui bottom attached tab segment" data-tab="settings">
+    <form class="ui form" id="guest-policy-form">
+      {% csrf_token %}
+      <div class="two fields">
+        <div class="field">
+          <label>Feature Enabled</label>
+          <select id="policy_feature_enabled" class="ui dropdown">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
         </div>
-    </div>
+        <div class="field">
+          <label>Charge Per Day</label>
+          <input type="number" min="0" step="0.01" id="policy_charge_per_day" required>
+        </div>
+      </div>
+      <div class="three fields">
+        <div class="field">
+          <label>Min Advance Days</label>
+          <input type="number" min="0" id="policy_min_advance_days" required>
+        </div>
+        <div class="field">
+          <label>Max Advance Days</label>
+          <input type="number" min="0" id="policy_max_advance_days" required>
+        </div>
+        <div class="field">
+          <label>Max Duration Days</label>
+          <input type="number" min="1" id="policy_max_booking_duration_days" required>
+        </div>
+      </div>
+      <div class="two fields">
+        <div class="field">
+          <label>Max Concurrent Bookings per Student</label>
+          <input type="number" min="1" id="policy_max_concurrent" required>
+        </div>
+        <div class="field">
+          <label>Eligibility Note</label>
+          <input type="text" id="policy_eligibility_note">
+        </div>
+      </div>
+      <button class="ui primary button" type="submit">Save Settings</button>
+    </form>
+    <div id="settings-feedback" class="ui hidden message" style="margin-top: 1rem;"></div>
+  </div>
+
+  <div class="ui bottom attached tab segment" data-tab="reports">
+    <form id="booking-report-form" class="ui form">
+      <div class="three fields">
+        <div class="field">
+          <label>From Date</label>
+          <input type="date" id="report_start_date" required>
+        </div>
+        <div class="field">
+          <label>To Date</label>
+          <input type="date" id="report_end_date" required>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <button type="submit" class="ui primary button">Generate Report</button>
+        </div>
+      </div>
+    </form>
+    <div id="report-feedback" class="ui hidden message" style="margin-top: 1rem;"></div>
+    <div id="report-output" style="margin-top: 1rem;"></div>
+  </div>
 </div>
 
+<script>
+(function() {
+  $('.menu .item').tab();
 
-{% for hall in all_hall %}
-    <div class="{% if hall.hall_id == 'vivekananda' %}ui active tab{% else %}ui tab{% endif %}" data-tab={{hall.hall_id}}_guest_room_request>
-        <div class="textLoader" style="max-height: 64vh; overflow-y: auto; overflow-x: hidden;">
-            {% block {{hall.hall_id}} %}
-                {% include 'hostelmanagement/request_list.html' with hall_id=hall.hall_id %}
-            {% endblock %}
+  const pendingList = document.getElementById('pending-bookings-list');
+  const checkinList = document.getElementById('checkin-bookings-list');
+  const checkoutList = document.getElementById('checkout-bookings-list');
+
+  const pendingFeedback = document.getElementById('pending-feedback');
+  const checkinFeedback = document.getElementById('checkin-feedback');
+  const checkoutFeedback = document.getElementById('checkout-feedback');
+  const settingsFeedback = document.getElementById('settings-feedback');
+  const reportFeedback = document.getElementById('report-feedback');
+
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  }
+
+  function setMessage(el, type, message) {
+    el.className = `ui ${type} message`;
+    el.textContent = message;
+  }
+
+  function clearMessage(el) {
+    el.className = 'ui hidden message';
+    el.textContent = '';
+  }
+
+  function bookingCard(booking, actionsHtml) {
+    return `
+      <div class="item">
+        <div class="content">
+          <div class="header">#${booking.id} - ${booking.guest_name}</div>
+          <div class="meta">${booking.student_username} | ${booking.hall_name}</div>
+          <div class="description">
+            Dates: ${booking.arrival_date} to ${booking.departure_date}<br>
+            Room Type: ${booking.room_type} | Guests: ${booking.total_guest} | Rooms: ${booking.rooms_required}<br>
+            Assigned Room ID: ${booking.guest_room_id || 'Not assigned'}<br>
+            Purpose: ${booking.purpose || '-'}
+          </div>
+          <div class="extra">${actionsHtml}</div>
         </div>
-    </div>
-{% endfor %}
+      </div>
+    `;
+  }
 
+  async function fetchJson(url, options) {
+    const res = await fetch(url, options || { method: 'GET', credentials: 'same-origin' });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || 'Request failed');
+    return payload;
+  }
+
+  async function loadPending() {
+    pendingList.innerHTML = '<div class="ui active inline loader"></div>';
+    clearMessage(pendingFeedback);
+    try {
+      const bookings = await fetchJson('/hostelmanagement/guest-room/caretaker/pending/', {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+
+      if (!bookings.length) {
+        pendingList.innerHTML = '<div class="ui message">No pending requests.</div>';
+        return;
+      }
+
+      pendingList.innerHTML = bookings.map(b => bookingCard(b, `
+        <div class="ui form">
+          <div class="three fields">
+            <div class="field">
+              <input type="text" placeholder="Guest Room ID" data-field="room" data-id="${b.id}">
+            </div>
+            <div class="field">
+              <input type="text" placeholder="Comment / Reason" data-field="comment" data-id="${b.id}">
+            </div>
+            <div class="field">
+              <button class="ui mini positive button" data-action="approve" data-id="${b.id}">Approve</button>
+              <button class="ui mini negative button" data-action="reject" data-id="${b.id}">Reject</button>
+            </div>
+          </div>
+        </div>
+      `)).join('');
+    } catch (err) {
+      pendingList.innerHTML = '';
+      setMessage(pendingFeedback, 'negative', err.message);
+    }
+  }
+
+  async function loadCheckin() {
+    checkinList.innerHTML = '<div class="ui active inline loader"></div>';
+    clearMessage(checkinFeedback);
+    try {
+      const all = await fetchJson('/hostelmanagement/guest-room/caretaker/report/?start_date=2000-01-01&end_date=2100-01-01', {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      const bookings = (all.bookings || []).filter(b => ['Approved', 'Confirmed'].includes(b.status));
+      if (!bookings.length) {
+        checkinList.innerHTML = '<div class="ui message">No approved bookings ready for check-in.</div>';
+        return;
+      }
+
+      checkinList.innerHTML = bookings.map(b => {
+        const booking = {
+          id: b.booking_id,
+          guest_name: b.guest_name,
+          student_username: b.student,
+          hall_name: all.hall_name,
+          arrival_date: b.arrival_date,
+          departure_date: b.departure_date,
+          room_type: '-',
+          total_guest: '-',
+          rooms_required: '-',
+          guest_room_id: b.room_id,
+          purpose: '-',
+        };
+        return bookingCard(booking, `
+        <div class="ui form">
+          <div class="three fields">
+            <div class="field">
+              <input type="text" placeholder="ID Proof Type" data-field="proofType" data-id="${b.booking_id}">
+            </div>
+            <div class="field">
+              <input type="text" placeholder="ID Proof Number" data-field="proofNumber" data-id="${b.booking_id}">
+            </div>
+            <div class="field">
+              <button class="ui mini primary button" data-action="checkin" data-id="${b.booking_id}">Check-In</button>
+            </div>
+          </div>
+        </div>
+      `);
+      }).join('');
+    } catch (err) {
+      checkinList.innerHTML = '';
+      setMessage(checkinFeedback, 'negative', err.message);
+    }
+  }
+
+  async function loadCheckout() {
+    checkoutList.innerHTML = '<div class="ui active inline loader"></div>';
+    clearMessage(checkoutFeedback);
+    try {
+      const all = await fetchJson('/hostelmanagement/guest-room/caretaker/report/?start_date=2000-01-01&end_date=2100-01-01', {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      const bookings = (all.bookings || []).filter(b => b.status === 'CheckedIn');
+      if (!bookings.length) {
+        checkoutList.innerHTML = '<div class="ui message">No checked-in bookings pending check-out.</div>';
+        return;
+      }
+
+      checkoutList.innerHTML = bookings.map(b => {
+        const booking = {
+          id: b.booking_id,
+          guest_name: b.guest_name,
+          student_username: b.student,
+          hall_name: all.hall_name,
+          arrival_date: b.arrival_date,
+          departure_date: b.departure_date,
+          room_type: '-',
+          total_guest: '-',
+          rooms_required: '-',
+          guest_room_id: b.room_id,
+          purpose: '-',
+        };
+        return bookingCard(booking, `
+        <div class="ui form">
+          <div class="three fields">
+            <div class="field">
+              <input type="text" placeholder="Inspection Notes" data-field="inspection" data-id="${b.booking_id}">
+            </div>
+            <div class="field">
+              <input type="text" placeholder="Damage Report" data-field="damageReport" data-id="${b.booking_id}">
+            </div>
+            <div class="field">
+              <input type="number" min="0" step="0.01" placeholder="Damage Amount" data-field="damageAmount" data-id="${b.booking_id}">
+            </div>
+            <div class="field">
+              <button class="ui mini orange button" data-action="checkout" data-id="${b.booking_id}">Check-Out</button>
+            </div>
+          </div>
+        </div>
+      `);
+      }).join('');
+    } catch (err) {
+      checkoutList.innerHTML = '';
+      setMessage(checkoutFeedback, 'negative', err.message);
+    }
+  }
+
+  async function loadPolicy() {
+    clearMessage(settingsFeedback);
+    try {
+      const policy = await fetchJson('/hostelmanagement/guest-room/caretaker/settings/', {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+
+      document.getElementById('policy_feature_enabled').value = String(policy.feature_enabled);
+      document.getElementById('policy_charge_per_day').value = policy.charge_per_day;
+      document.getElementById('policy_min_advance_days').value = policy.min_advance_days;
+      document.getElementById('policy_max_advance_days').value = policy.max_advance_days;
+      document.getElementById('policy_max_booking_duration_days').value = policy.max_booking_duration_days;
+      document.getElementById('policy_max_concurrent').value = policy.max_concurrent_bookings_per_student;
+      document.getElementById('policy_eligibility_note').value = policy.eligibility_note || '';
+    } catch (err) {
+      setMessage(settingsFeedback, 'negative', err.message);
+    }
+  }
+
+  async function savePolicy(event) {
+    event.preventDefault();
+    clearMessage(settingsFeedback);
+
+    const body = {
+      feature_enabled: document.getElementById('policy_feature_enabled').value,
+      charge_per_day: document.getElementById('policy_charge_per_day').value,
+      min_advance_days: document.getElementById('policy_min_advance_days').value,
+      max_advance_days: document.getElementById('policy_max_advance_days').value,
+      max_booking_duration_days: document.getElementById('policy_max_booking_duration_days').value,
+      max_concurrent_bookings_per_student: document.getElementById('policy_max_concurrent').value,
+      eligibility_note: document.getElementById('policy_eligibility_note').value,
+    };
+
+    try {
+      await fetchJson('/hostelmanagement/guest-room/caretaker/settings/', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify(body),
+      });
+      setMessage(settingsFeedback, 'positive', 'Guest room settings saved successfully.');
+    } catch (err) {
+      setMessage(settingsFeedback, 'negative', err.message);
+    }
+  }
+
+  async function generateReport(event) {
+    event.preventDefault();
+    clearMessage(reportFeedback);
+    const startDate = document.getElementById('report_start_date').value;
+    const endDate = document.getElementById('report_end_date').value;
+
+    if (!startDate || !endDate) {
+      setMessage(reportFeedback, 'negative', 'Please select report date range.');
+      return;
+    }
+
+    try {
+      const payload = await fetchJson(`/hostelmanagement/guest-room/caretaker/report/?start_date=${startDate}&end_date=${endDate}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+
+      document.getElementById('report-output').innerHTML = `
+        <div class="ui info message">
+          <strong>Hall:</strong> ${payload.hall_name} (${payload.hall_id})<br>
+          <strong>Total Bookings:</strong> ${payload.total_bookings}<br>
+          <strong>Revenue Generated:</strong> ${payload.revenue_generated}<br>
+          <strong>Damage Fines:</strong> ${payload.damage_fines_total}<br>
+          <strong>Status Breakdown:</strong> ${JSON.stringify(payload.status_breakdown)}
+        </div>
+      `;
+      setMessage(reportFeedback, 'positive', 'Report generated successfully.');
+    } catch (err) {
+      setMessage(reportFeedback, 'negative', err.message);
+    }
+  }
+
+  async function decideBooking(bookingId, decision) {
+    const roomEl = document.querySelector(`[data-field="room"][data-id="${bookingId}"]`);
+    const commentEl = document.querySelector(`[data-field="comment"][data-id="${bookingId}"]`);
+    const roomValue = roomEl ? roomEl.value.trim() : '';
+    const commentValue = commentEl ? commentEl.value.trim() : '';
+
+    const body = {
+      decision: decision,
+      comment: commentValue,
+      guest_room_id: roomValue || null,
+    };
+
+    try {
+      await fetchJson(`/hostelmanagement/guest-room/caretaker/${bookingId}/decision/`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify(body),
+      });
+      setMessage(pendingFeedback, 'positive', `Booking #${bookingId} ${decision} successfully.`);
+      loadPending();
+      loadCheckin();
+    } catch (err) {
+      setMessage(pendingFeedback, 'negative', err.message);
+    }
+  }
+
+  async function checkInBooking(bookingId) {
+    const proofTypeEl = document.querySelector(`[data-field="proofType"][data-id="${bookingId}"]`);
+    const proofNumberEl = document.querySelector(`[data-field="proofNumber"][data-id="${bookingId}"]`);
+
+    try {
+      await fetchJson(`/hostelmanagement/guest-room/caretaker/${bookingId}/check-in/`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify({
+          id_proof_type: proofTypeEl ? proofTypeEl.value.trim() : '',
+          id_proof_number: proofNumberEl ? proofNumberEl.value.trim() : '',
+          checkin_notes: 'Checked in via caretaker dashboard',
+        }),
+      });
+      setMessage(checkinFeedback, 'positive', `Booking #${bookingId} checked in successfully.`);
+      loadCheckin();
+      loadCheckout();
+    } catch (err) {
+      setMessage(checkinFeedback, 'negative', err.message);
+    }
+  }
+
+  async function checkOutBooking(bookingId) {
+    const inspectionEl = document.querySelector(`[data-field="inspection"][data-id="${bookingId}"]`);
+    const damageReportEl = document.querySelector(`[data-field="damageReport"][data-id="${bookingId}"]`);
+    const damageAmountEl = document.querySelector(`[data-field="damageAmount"][data-id="${bookingId}"]`);
+
+    try {
+      await fetchJson(`/hostelmanagement/guest-room/caretaker/${bookingId}/check-out/`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify({
+          inspection_notes: inspectionEl ? inspectionEl.value.trim() : '',
+          damage_report: damageReportEl ? damageReportEl.value.trim() : '',
+          damage_amount: damageAmountEl ? damageAmountEl.value.trim() : 0,
+        }),
+      });
+      setMessage(checkoutFeedback, 'positive', `Booking #${bookingId} checked out successfully.`);
+      loadCheckout();
+    } catch (err) {
+      setMessage(checkoutFeedback, 'negative', err.message);
+    }
+  }
+
+  pendingList.addEventListener('click', function(event) {
+    const btn = event.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const bookingId = btn.getAttribute('data-id');
+    if (!bookingId) return;
+
+    if (action === 'approve') decideBooking(bookingId, 'approved');
+    if (action === 'reject') decideBooking(bookingId, 'rejected');
+  });
+
+  checkinList.addEventListener('click', function(event) {
+    const btn = event.target.closest('button[data-action="checkin"]');
+    if (!btn) return;
+    checkInBooking(btn.getAttribute('data-id'));
+  });
+
+  checkoutList.addEventListener('click', function(event) {
+    const btn = event.target.closest('button[data-action="checkout"]');
+    if (!btn) return;
+    checkOutBooking(btn.getAttribute('data-id'));
+  });
+
+  document.getElementById('guest-policy-form').addEventListener('submit', savePolicy);
+  document.getElementById('booking-report-form').addEventListener('submit', generateReport);
+
+  document.getElementById('refresh-pending-bookings').addEventListener('click', loadPending);
+  document.getElementById('refresh-checkin-bookings').addEventListener('click', loadCheckin);
+  document.getElementById('refresh-checkout-bookings').addEventListener('click', loadCheckout);
+
+  loadPending();
+  loadCheckin();
+  loadCheckout();
+  loadPolicy();
+})();
+</script>
 {% endblock %}

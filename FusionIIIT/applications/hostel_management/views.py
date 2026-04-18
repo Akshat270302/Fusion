@@ -3,7 +3,8 @@ from django.http import HttpResponseBadRequest
 from .models import HostelLeave, HallCaretaker
 from applications.hostel_management.models import HallCaretaker, HallWarden
 from django.http import JsonResponse, HttpResponse
-from django.db import IntegrityError
+from django.db import IntegrityError, models
+from django.core.files.storage import default_storage
 from rest_framework.exceptions import NotFound
 from django.shortcuts import redirect
 from django.template import loader
@@ -72,12 +73,19 @@ import json
 from django.utils.decorators import method_decorator
 from django.contrib.auth.decorators import user_passes_test
 from django.contrib.auth import logout
+from functools import wraps
 from django.contrib.auth.decorators import login_required
 from Fusion.settings.common import LOGIN_URL
 from django.shortcuts import get_object_or_404, redirect, render
 from django.db import transaction
 from . import services
 from . import selectors
+from . import lifecycle_services
+from .workflow_views import (
+    hostel_workflow_bulk_allot,
+    hostel_workflow_dashboard,
+    hostel_workflow_eligible_students,
+)
 from .api.serializers import HostelComplaintSerializer
 from .forms import HallForm
 from notification.views import hostel_notifications
@@ -87,7 +95,577 @@ from django.db import transaction
 
 
 def is_superuser(user):
-    return user.is_authenticated and user.is_superuser
+    if not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    return HoldsDesignation.objects.filter(
+        working=user,
+    ).filter(
+        Q(designation__name__iexact='super_admin') | Q(designation__name__iexact='SuperAdmin')
+    ).exists()
+
+
+def _require_super_admin(user):
+    if is_superuser(user):
+        return None
+    return Response({'error': 'Only Super Admin can perform this action.'}, status=status.HTTP_403_FORBIDDEN)
+
+
+def authorizeRoles(*allowed_roles):
+    """ERP-style RBAC guard for hostel APIs.
+
+    Supported roles: student, super_admin, warden, caretaker.
+    """
+    def decorator(view_func):
+        @wraps(view_func)
+        def _wrapped(request, *args, **kwargs):
+            role, _ = services.resolve_hostel_rbac_role_service(user=request.user)
+            if role not in allowed_roles:
+                return Response({'error': 'You are not authorized for this action.'}, status=status.HTTP_403_FORBIDDEN)
+            return view_func(request, *args, **kwargs)
+
+        return _wrapped
+
+    return decorator
+
+
+def _parse_assignment_date(value, field_name):
+    if not value:
+        return None
+    try:
+        from datetime import datetime as dt
+
+        return dt.strptime(value, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        raise ValueError(f'Invalid {field_name}. Use YYYY-MM-DD format.')
+
+
+MAX_BATCH_DOC_SIZE = 5 * 1024 * 1024
+ALLOWED_BATCH_DOC_EXTENSIONS = {'.pdf', '.docx', '.xlsx'}
+REQUIRE_BATCH_DOCUMENT = False
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def get_batches(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    halls = [
+        {
+            'hall_id': hall.hall_id,
+            'hall_name': hall.hall_name,
+            'operational_status': hall.operational_status,
+        }
+        for hall in Hall.objects.all().order_by('hall_id')
+    ]
+
+    allocations = [
+        {
+            'id': allocation.id,
+            'hall_id': allocation.hall.hall_id,
+            'hall_name': allocation.hall.hall_name,
+            'batch_name': allocation.batch_name,
+            'academic_session': allocation.academic_session,
+            'document_url': allocation.document_url,
+            'created_by': allocation.created_by.username if allocation.created_by else None,
+            'created_at': allocation.created_at,
+        }
+        for allocation in HostelBatch.objects.select_related('hall', 'created_by').all()
+    ]
+
+    available_batches = [
+        {
+            'value': str(row['batch']),
+            'label': str(row['batch']),
+            'student_count': row['student_count'],
+        }
+        for row in Student.objects.filter(batch__isnull=False)
+        .values('batch')
+        .annotate(student_count=models.Count('id'))
+        .order_by('-batch')
+    ]
+
+    return Response(
+        {
+            'halls': halls,
+            'allocations': allocations,
+            'available_batches': available_batches,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def batch_assign(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    hall_id = (request.data.get('hall_id') or request.data.get('selectedHall') or '').strip()
+    batch_name = (request.data.get('batch') or request.data.get('selectedBatch') or '').strip()
+    academic_session = (request.data.get('academic_session') or request.data.get('academicSession') or '').strip()
+    document = request.FILES.get('document') or request.FILES.get('file')
+
+    if not hall_id or not batch_name or not academic_session:
+        return Response({'error': 'Please fill all required fields.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if REQUIRE_BATCH_DOCUMENT and not document:
+        return Response({'error': 'Please upload required document.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        hall = Hall.objects.get(hall_id=hall_id)
+    except Hall.DoesNotExist:
+        return Response({'error': f'Hall with ID {hall_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if hall.operational_status != HostelOperationalStatus.ACTIVE:
+        return Response(
+            {'error': 'Cannot assign batch to an inactive hostel.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if hall.max_accomodation <= 0:
+        return Response({'error': 'Hostel configuration is incomplete.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        batch_year = int(str(batch_name).strip())
+    except (TypeError, ValueError):
+        return Response(
+            {'error': 'Batch must be a numeric year like 2023.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    document_url = None
+    if document:
+        filename = (document.name or '').lower()
+        file_ext = f".{filename.split('.')[-1]}" if '.' in filename else ''
+        if file_ext not in ALLOWED_BATCH_DOC_EXTENSIONS:
+            return Response(
+                {'error': 'Invalid file type. Allowed formats: pdf, docx, xlsx.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if document.size > MAX_BATCH_DOC_SIZE:
+            return Response(
+                {'error': 'File size exceeds 5 MB limit.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from datetime import datetime as dt
+
+        safe_name = f"hostel_management/batch_documents/{hall_id}_{int(dt.now().timestamp())}_{document.name}"
+        saved_path = default_storage.save(safe_name, document)
+        document_url = default_storage.url(saved_path)
+
+    with transaction.atomic():
+        previous_batch = hall.assigned_batch
+        hall.assigned_batch = batch_name
+        hall.save(update_fields=['assigned_batch'])
+
+        hall_number_digits = ''.join(ch for ch in hall.hall_id if ch.isdigit())
+        hall_number = int(hall_number_digits) if hall_number_digits else None
+
+        mapped_students = []
+        if hall_number is not None:
+            batch_students = Student.objects.filter(batch=batch_year).select_related('id__user')
+            batch_students.update(hall_no=hall_number)
+
+            for student in batch_students:
+                mapped_students.append(student.id.user.username)
+                UserHostelMapping.objects.update_or_create(
+                    user=student.id,
+                    defaults={
+                        'hall': hall,
+                        'role': UserHostelMapping.ROLE_STUDENT,
+                    },
+                )
+                StudentDetails.objects.update_or_create(
+                    id=student.id.user.username,
+                    defaults={
+                        'first_name': student.id.user.first_name,
+                        'last_name': student.id.user.last_name,
+                        'programme': student.programme,
+                        'batch': str(student.batch),
+                        'room_num': student.room_no or '',
+                        'hall_no': str(hall_number),
+                        'hall_id': hall.hall_id,
+                        'specialization': student.specialization,
+                    },
+                )
+
+        existing_allocation = HostelBatch.objects.filter(
+            hall=hall,
+            batch_name=batch_name,
+            academic_session=academic_session,
+        ).first()
+
+        if not document_url and existing_allocation:
+            document_url = existing_allocation.document_url
+
+        allocation, created = HostelBatch.objects.update_or_create(
+            hall=hall,
+            batch_name=batch_name,
+            academic_session=academic_session,
+            defaults={
+                'document_url': document_url,
+                'created_by': request.user,
+            },
+        )
+
+        for allotment in HostelAllotment.objects.filter(hall=hall):
+            allotment.assignedBatch = batch_name
+            allotment.save(update_fields=['assignedBatch'])
+
+        HostelTransactionHistory.objects.create(
+            hall=hall,
+            change_type='BatchAllocation',
+            previous_value=previous_batch or 'None',
+            new_value=f'{batch_name} ({academic_session})',
+        )
+
+        lifecycle_services.HostelService.sync_lifecycle_state(
+            hall,
+            updated_by=request.user,
+            note='Batch assigned',
+        )
+
+    return Response(
+        {
+            'message': 'Batch allocation saved successfully.',
+            'students_mapped_to_hall': len(mapped_students),
+            'allocation': {
+                'id': allocation.id,
+                'hall_id': hall.hall_id,
+                'batch_name': allocation.batch_name,
+                'academic_session': allocation.academic_session,
+                'document_url': allocation.document_url,
+                'created_by': request.user.username,
+                'created_at': allocation.created_at,
+                'created': created,
+            },
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def get_caretakers(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    halls_payload = []
+    for hall in Hall.objects.all().order_by('hall_id'):
+        current_assignment = HallCaretaker.objects.filter(hall=hall, is_active=True).order_by('-assigned_at').first()
+        halls_payload.append(
+            {
+                'hall_id': hall.hall_id,
+                'hall_name': hall.hall_name,
+                'current_caretaker': current_assignment.staff.id.user.username if current_assignment else None,
+                'current_assignment': {
+                    'start_date': current_assignment.start_date if current_assignment else None,
+                    'end_date': current_assignment.end_date if current_assignment else None,
+                } if current_assignment else None,
+            }
+        )
+
+    caretakers_payload = []
+    for staff in Staff.objects.select_related('id__user').all().order_by('id__user__username'):
+        caretakers_payload.append(
+            {
+                'id_id': staff.id.user.username,
+                'full_name': f"{staff.id.user.first_name} {staff.id.user.last_name}".strip(),
+                'email': staff.id.user.email,
+            }
+        )
+
+    return Response({'halls': halls_payload, 'caretaker_usernames': caretakers_payload}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def get_wardens(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    halls_payload = []
+    for hall in Hall.objects.all().order_by('hall_id'):
+        current_assignment = HallWarden.objects.filter(hall=hall, is_active=True).order_by('-assigned_at').first()
+        halls_payload.append(
+            {
+                'hall_id': hall.hall_id,
+                'hall_name': hall.hall_name,
+                'current_warden': current_assignment.faculty.id.user.username if current_assignment else None,
+                'current_assignment': {
+                    'start_date': current_assignment.start_date if current_assignment else None,
+                    'end_date': current_assignment.end_date if current_assignment else None,
+                    'assignment_role': current_assignment.assignment_role if current_assignment else None,
+                } if current_assignment else None,
+            }
+        )
+
+    wardens_payload = []
+    for faculty in Faculty.objects.select_related('id__user').all().order_by('id__user__username'):
+        wardens_payload.append(
+            {
+                'id_id': faculty.id.user.username,
+                'full_name': f"{faculty.id.user.first_name} {faculty.id.user.last_name}".strip(),
+                'email': faculty.id.user.email,
+            }
+        )
+
+    return Response({'halls': halls_payload, 'warden_usernames': wardens_payload}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def assign_caretakers(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    hall_id = (request.data.get('hall_id') or '').strip()
+    caretaker_username = (request.data.get('caretaker_username') or '').strip()
+    force_reassign = bool(request.data.get('force_reassign', False))
+
+    if not hall_id or not caretaker_username:
+        return Response({'error': 'Please select both a hall and a caretaker.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        start_date = _parse_assignment_date(request.data.get('start_date'), 'start_date') or date.today()
+        end_date = _parse_assignment_date(request.data.get('end_date'), 'end_date')
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if end_date and end_date < start_date:
+        return Response({'error': 'Invalid assignment dates.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        hall = Hall.objects.get(hall_id=hall_id)
+    except Hall.DoesNotExist:
+        return Response({'error': f'Hall with ID {hall_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        caretaker_staff = Staff.objects.get(id__user__username=caretaker_username)
+    except Staff.DoesNotExist:
+        return Response({'error': f'Caretaker with username {caretaker_username} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    concurrent_assignment = HallCaretaker.objects.filter(
+        staff=caretaker_staff,
+        is_active=True,
+    ).exclude(hall=hall).first()
+
+    if concurrent_assignment and not force_reassign:
+        return Response(
+            {
+                'warning': f'{caretaker_username} is already assigned to {concurrent_assignment.hall.hall_name}. Confirm to reassign.',
+                'requires_confirmation': True,
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    with transaction.atomic():
+        if concurrent_assignment:
+            concurrent_assignment.is_active = False
+            concurrent_assignment.end_date = start_date
+            concurrent_assignment.save(update_fields=['is_active', 'end_date'])
+
+        current_hall_assignment = HallCaretaker.objects.filter(hall=hall, is_active=True).first()
+        if current_hall_assignment:
+            current_hall_assignment.is_active = False
+            current_hall_assignment.end_date = start_date
+            current_hall_assignment.save(update_fields=['is_active', 'end_date'])
+
+        new_assignment = HallCaretaker.objects.create(
+            hall=hall,
+            staff=caretaker_staff,
+            start_date=start_date,
+            end_date=end_date,
+            is_active=True,
+        )
+
+        for hostel_allotment in HostelAllotment.objects.filter(hall=hall):
+            hostel_allotment.assignedCaretaker = caretaker_staff
+            hostel_allotment.save()
+
+        current_warden = HallWarden.objects.filter(hall=hall, is_active=True).first()
+
+        HostelTransactionHistory.objects.create(
+            hall=hall,
+            change_type='CaretakerAssignment',
+            previous_value=current_hall_assignment.staff.id.user.username if current_hall_assignment else 'None',
+            new_value=f"{caretaker_username} ({start_date} to {end_date or 'open'})",
+        )
+
+        HostelHistory.objects.create(
+            hall=hall,
+            caretaker=caretaker_staff,
+            batch=hall.assigned_batch,
+            warden=current_warden.faculty if current_warden else None,
+        )
+
+        extra_info = caretaker_staff.id
+        UserHostelMapping.objects.update_or_create(
+            user=extra_info,
+            defaults={'hall': hall, 'role': UserHostelMapping.ROLE_CARETAKER},
+        )
+
+        hostel_notifications(request.user, caretaker_staff.id.user, 'caretaker_assignment')
+
+        lifecycle_services.HostelService.sync_lifecycle_state(
+            hall,
+            updated_by=request.user,
+            note='Caretaker assigned',
+        )
+
+    advisory = None
+    active_caretaker_count = HallCaretaker.objects.filter(hall=hall, is_active=True).count()
+    if active_caretaker_count < 2:
+        advisory = 'Insufficient caretaker coverage advisory: consider assigning additional caretakers.'
+
+    return Response(
+        {
+            'message': f'Caretaker {caretaker_username} assigned to Hall {hall_id} successfully',
+            'assignment': {
+                'start_date': new_assignment.start_date,
+                'end_date': new_assignment.end_date,
+                'is_active': new_assignment.is_active,
+            },
+            'advisory': advisory,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def assign_warden(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    hall_id = (request.data.get('hall_id') or '').strip()
+    warden_username = (request.data.get('warden_username') or request.data.get('warden_id') or '').strip()
+    assignment_role = (request.data.get('assignment_role') or 'primary').strip().lower()
+    force_reassign = bool(request.data.get('force_reassign', False))
+
+    if not hall_id or not warden_username:
+        return Response({'error': 'Please select both a hall and a warden.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if assignment_role not in ['primary', 'secondary']:
+        return Response({'error': 'Invalid warden designation.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        start_date = _parse_assignment_date(request.data.get('start_date'), 'start_date') or date.today()
+        end_date = _parse_assignment_date(request.data.get('end_date'), 'end_date')
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if end_date and end_date < start_date:
+        return Response({'error': 'Invalid assignment dates.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        hall = Hall.objects.get(hall_id=hall_id)
+    except Hall.DoesNotExist:
+        return Response({'error': f'Hall with ID {hall_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        warden = Faculty.objects.get(id__user__username=warden_username)
+    except Faculty.DoesNotExist:
+        return Response({'error': f'Warden with username {warden_username} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    concurrent_assignment = HallWarden.objects.filter(
+        faculty=warden,
+        is_active=True,
+    ).exclude(hall=hall).first()
+
+    if concurrent_assignment and not force_reassign:
+        return Response(
+            {
+                'warning': f'{warden_username} is already assigned to {concurrent_assignment.hall.hall_name}. Confirm to reassign.',
+                'requires_confirmation': True,
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    with transaction.atomic():
+        if concurrent_assignment:
+            concurrent_assignment.is_active = False
+            concurrent_assignment.end_date = start_date
+            concurrent_assignment.save(update_fields=['is_active', 'end_date'])
+
+        current_hall_assignment = HallWarden.objects.filter(hall=hall, is_active=True).first()
+        if current_hall_assignment:
+            current_hall_assignment.is_active = False
+            current_hall_assignment.end_date = start_date
+            current_hall_assignment.save(update_fields=['is_active', 'end_date'])
+
+        new_assignment = HallWarden.objects.create(
+            hall=hall,
+            faculty=warden,
+            start_date=start_date,
+            end_date=end_date,
+            assignment_role=assignment_role,
+            is_active=True,
+        )
+
+        current_caretaker = HallCaretaker.objects.filter(hall=hall, is_active=True).first()
+
+        for hostel_allotment in HostelAllotment.objects.filter(hall=hall):
+            hostel_allotment.assignedWarden = warden
+            hostel_allotment.save()
+
+        HostelTransactionHistory.objects.create(
+            hall=hall,
+            change_type='WardenAssignment',
+            previous_value=current_hall_assignment.faculty.id.user.username if current_hall_assignment else 'None',
+            new_value=f"{warden_username} ({assignment_role}, {start_date} to {end_date or 'open'})",
+        )
+
+        HostelHistory.objects.create(
+            hall=hall,
+            caretaker=current_caretaker.staff if current_caretaker else None,
+            batch=hall.assigned_batch,
+            warden=warden,
+        )
+
+        extra_info = warden.id
+        UserHostelMapping.objects.update_or_create(
+            user=extra_info,
+            defaults={'hall': hall, 'role': UserHostelMapping.ROLE_WARDEN},
+        )
+
+        hostel_notifications(request.user, warden.id.user, 'warden_assignment')
+
+        lifecycle_services.HostelService.sync_lifecycle_state(
+            hall,
+            updated_by=request.user,
+            note='Warden assigned',
+        )
+
+    return Response(
+        {
+            'message': f'Warden {warden_username} assigned to Hall {hall_id} successfully',
+            'assignment': {
+                'start_date': new_assignment.start_date,
+                'end_date': new_assignment.end_date,
+                'assignment_role': new_assignment.assignment_role,
+                'is_active': new_assignment.is_active,
+            },
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 # //! My change
@@ -1570,39 +2148,151 @@ class AssignWardenView(APIView):
             return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
 
 
-@method_decorator(user_passes_test(is_superuser), name='dispatch')
-class AddHostelView(View):
-    template_name = 'hostelmanagement/add_hostel.html'
+class AddHostelView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
 
-    def get(self, request, *args, **kwargs):
-        form = HallForm()
-        return render(request, self.template_name, {'form': form})
+    def _generate_hall_id(self):
+        max_suffix = 0
+        for existing_hall_id in Hall.objects.values_list('hall_id', flat=True):
+            match = re.search(r'(\d+)$', str(existing_hall_id or ''))
+            if match:
+                max_suffix = max(max_suffix, int(match.group(1)))
+        return f'hall{max_suffix + 1}'
 
     def post(self, request, *args, **kwargs):
-        form = HallForm(request.POST)
-        if form.is_valid():
-            hall_id = form.cleaned_data['hall_id']
+        permission_error = _require_super_admin(request.user)
+        if permission_error:
+            return permission_error
 
-            # # Check if a hall with the given hall_id already exists
-            # if Hall.objects.filter(hall_id=hall_id).exists():
-            #     messages.error(request, f'Hall with ID {hall_id} already exists.')
-            #     return redirect('hostelmanagement:add_hostel')
+        hall_name = (request.data.get('hall_name') or '').strip()
+        hall_type = (request.data.get('type_of_seater') or '').strip().lower()
+        assigned_batch = (request.data.get('assigned_batch') or '').strip()
 
-            # Check if a hall with the given hall_id already exists
-            if Hall.objects.filter(hall_id=hall_id).exists():
-                error_message = f'Hall with ID {hall_id} already exists.'
+        hall_id = (request.data.get('hall_id') or '').strip().lower()
+        if not hall_id:
+            hall_id = self._generate_hall_id()
 
-                return HttpResponse(error_message, status=400)
+        try:
+            max_accomodation = int(request.data.get('max_accomodation'))
+            room_count = int(request.data.get('room_count'))
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'Please enter valid positive numbers.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            # If not, create a new hall
-            form.save()
-            messages.success(request, 'Hall added successfully!')
-            # Redirect to the view showing all hostels
-            return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
-            # return render(request, 'hostelmanagement/admin_hostel_list.html')
+        if not hall_name or not hall_type or not assigned_batch:
+            return Response(
+                {'error': 'Please fill all required fields.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # If form is not valid, render the form with errors
-        return render(request, self.template_name, {'form': form})
+        if max_accomodation <= 0 or room_count <= 0:
+            return Response(
+                {'error': 'Please enter valid positive numbers.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if Hall.objects.filter(hall_name__iexact=hall_name).exists():
+            return Response(
+                {'error': 'A hostel with this name already exists.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if Hall.objects.filter(hall_id__iexact=hall_id).exists():
+            return Response(
+                {'error': 'A hostel with this ID already exists.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        room_capacity_default = {
+            'single': 1,
+            'double': 2,
+            'triple': 3,
+        }.get(hall_type)
+        if room_capacity_default is None:
+            return Response(
+                {'error': 'Please fill all required fields.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        room_capacity = request.data.get('room_capacity', room_capacity_default)
+        block_no = (request.data.get('block_no') or 'A').strip().upper()[:1] or 'A'
+
+        try:
+            room_capacity = int(room_capacity)
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'Please enter valid positive numbers.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if room_capacity <= 0:
+            return Response(
+                {'error': 'Please enter valid positive numbers.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if room_count * room_capacity < max_accomodation:
+            return Response(
+                {'error': 'Room configuration is incomplete.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        room_start_number = request.data.get('room_start_number', 1)
+        try:
+            room_start_number = int(room_start_number)
+        except (TypeError, ValueError):
+            room_start_number = 1
+
+        if room_start_number <= 0:
+            room_start_number = 1
+
+        with transaction.atomic():
+            hall = Hall.objects.create(
+                hall_id=hall_id,
+                hall_name=hall_name,
+                max_accomodation=max_accomodation,
+                assigned_batch=assigned_batch,
+                type_of_seater=hall_type,
+            )
+
+            for index in range(room_count):
+                room_number = str(room_start_number + index).zfill(3)[:4]
+                HallRoom.objects.create(
+                    hall=hall,
+                    room_no=room_number,
+                    block_no=block_no,
+                    room_cap=room_capacity,
+                    room_occupied=0,
+                )
+
+            HostelTransactionHistory.objects.create(
+                hall=hall,
+                change_type='HostelCreate',
+                previous_value='N/A',
+                new_value=f"Created by {request.user.username}",
+            )
+
+            lifecycle_services.HostelService.sync_lifecycle_state(
+                hall,
+                updated_by=request.user,
+                note='Hostel created',
+            )
+
+        return Response(
+            {
+                'message': 'Hostel added successfully!',
+                'hostel': {
+                    'hall_id': hall.hall_id,
+                    'hall_name': hall.hall_name,
+                    'operational_status': hall.operational_status,
+                    'created_rooms': room_count,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class CheckHallExistsView(View):
@@ -1619,37 +2309,134 @@ class CheckHallExistsView(View):
         return JsonResponse({'exists': exists})
 
 
-@method_decorator(user_passes_test(is_superuser), name='dispatch')
-class AdminHostelListView(View):
-    template_name = 'hostelmanagement/admin_hostel_list.html'
+class AdminHostelListView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
+        permission_error = _require_super_admin(request.user)
+        if permission_error:
+            return permission_error
+
         halls = Hall.objects.all()
-        # Create a list to store additional details
         hostel_details = []
 
-        # Loop through each hall and fetch assignedCaretaker and assignedWarden
         for hall in halls:
-            try:
-                caretaker = HallCaretaker.objects.filter(hall=hall).first()
-                warden = HallWarden.objects.filter(hall=hall).first()
-            except HostelAllotment.DoesNotExist:
-                assigned_caretaker = None
-                assigned_warden = None
+            caretaker = HallCaretaker.objects.filter(hall=hall).first()
+            warden = HallWarden.objects.filter(hall=hall).first()
 
-            hostel_detail = {
+            hostel_details.append(
+                {
+                    'hall_id': hall.hall_id,
+                    'hall_name': hall.hall_name,
+                    'max_accomodation': hall.max_accomodation,
+                    'number_students': hall.number_students,
+                    'assigned_batch': hall.assigned_batch,
+                    'operational_status': hall.operational_status,
+                    'room_count': HallRoom.objects.filter(hall=hall).count(),
+                    'occupied_rooms': HallRoom.objects.filter(hall=hall, room_occupied__gt=0).count(),
+                    'assigned_caretaker': caretaker.staff.id.user.username if caretaker else None,
+                    'assigned_warden': warden.faculty.id.user.username if warden else None,
+                }
+            )
+
+        return Response({'hostel_details': hostel_details}, status=status.HTTP_200_OK)
+
+
+class ManageHostelStatusView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        permission_error = _require_super_admin(request.user)
+        if permission_error:
+            return permission_error
+
+        hall_id = (request.data.get('hall_id') or '').strip()
+        action = (request.data.get('action') or '').strip().lower()
+        reason = (request.data.get('reason') or '').strip()
+
+        if not hall_id or not action:
+            return Response(
+                {'error': 'Please fill all required fields.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            hall = Hall.objects.get(hall_id=hall_id)
+        except Hall.DoesNotExist:
+            return Response({'error': 'Hostel not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        advisory = None
+
+        if action == 'activate':
+            has_warden = HallWarden.objects.filter(hall=hall).exists()
+            has_caretaker = HallCaretaker.objects.filter(hall=hall).exists()
+            if not has_warden or not has_caretaker:
+                return Response(
+                    {'error': 'Please assign at least one Warden and one Caretaker before activation.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            rooms = HallRoom.objects.filter(hall=hall)
+            total_capacity = rooms.aggregate(total=models.Sum('room_cap')).get('total') or 0
+            if not rooms.exists() or total_capacity <= 0:
+                return Response(
+                    {'error': 'Room configuration is incomplete. Add rooms with positive capacity before activation.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if total_capacity < hall.max_accomodation:
+                advisory = (
+                    f'Configured room capacity ({total_capacity}) is lower than max accommodation '
+                    f'({hall.max_accomodation}). Activation is allowed, but allotment may fail once capacity is exhausted.'
+                )
+            target_status = 'Active'
+        elif action == 'deactivate':
+            occupied_count = HallRoom.objects.filter(hall=hall, room_occupied__gt=0).count()
+            if occupied_count > 0:
+                return Response(
+                    {'error': f'Cannot deactivate hostel. {occupied_count} rooms are currently occupied.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            target_status = 'Inactive'
+        elif action in ['maintenance', 'under_maintenance']:
+            target_status = 'UnderMaintenance'
+        else:
+            return Response({'error': 'Invalid status action.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        previous_status = hall.operational_status
+        if previous_status == target_status:
+            return Response(
+                {'message': f'Hostel is already {target_status}.', 'status': target_status},
+                status=status.HTTP_200_OK,
+            )
+
+        hall.operational_status = target_status
+        hall.save(update_fields=['operational_status'])
+
+        HostelTransactionHistory.objects.create(
+            hall=hall,
+            change_type='HostelStatus',
+            previous_value=previous_status,
+            new_value=f'{target_status} by {request.user.username}. Reason: {reason or "N/A"}',
+        )
+
+        lifecycle_services.HostelService.sync_lifecycle_state(
+            hall,
+            updated_by=request.user,
+            note=f'Hostel status set to {target_status}',
+        )
+
+        return Response(
+            {
+                'message': 'Hostel status updated successfully.',
                 'hall_id': hall.hall_id,
-                'hall_name': hall.hall_name,
-                'max_accomodation': hall.max_accomodation,
-                'number_students': hall.number_students,
-                'assigned_batch': hall.assigned_batch,
-                'assigned_caretaker': caretaker.staff.id.user.username if caretaker else None,
-                'assigned_warden': warden.faculty.id.user.username if warden else None,
-            }
-
-            hostel_details.append(hostel_detail)
-
-        return render(request, self.template_name, {'hostel_details': hostel_details})
+                'status': hall.operational_status,
+                'advisory': advisory,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 @method_decorator(user_passes_test(is_superuser), name='dispatch')
@@ -2020,106 +2807,74 @@ def request_guest_room(request):
     """
     if request.method == "POST":
         form = GuestRoomBookingForm(request.POST)
-
-        if form.is_valid():
-            # print("Inside valid")
-            hall = form.cleaned_data['hall']
-            guest_name = form.cleaned_data['guest_name']
-            guest_phone = form.cleaned_data['guest_phone']
-            guest_email = form.cleaned_data['guest_email']
-            guest_address = form.cleaned_data['guest_address']
-            rooms_required = form.cleaned_data['rooms_required']
-            total_guest = form.cleaned_data['total_guest']
-            purpose = form.cleaned_data['purpose']
-            arrival_date = form.cleaned_data['arrival_date']
-            arrival_time = form.cleaned_data['arrival_time']
-            departure_date = form.cleaned_data['departure_date']
-            departure_time = form.cleaned_data['departure_time']
-            nationality = form.cleaned_data['nationality']
-            room_type = form.cleaned_data['room_type']  # Add room type
-
-
-            max_guests = {
-                'single': 1,
-                'double': 2,
-                'triple': 3,
-            }
-            # Fetch available room count based on room type and hall
-            available_rooms_count = GuestRoom.objects.filter(
-                hall=hall, room_type=room_type, vacant=True
-            ).count()
-            
-             # Check if there are enough available rooms
-            if available_rooms_count < rooms_required:
-                messages.error(request, "Not enough available rooms.")
-                return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
-            
-            # Check if the number of guests exceeds the capacity of selected rooms
-            if total_guest > rooms_required * max_guests.get(room_type, 1):
-                messages.error(request, "Number of guests exceeds the capacity of selected rooms.")
-                return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
-            
-
-            newBooking = GuestRoomBooking.objects.create(hall=hall, intender=request.user, guest_name=guest_name, guest_address=guest_address,
-                                                         guest_phone=guest_phone, guest_email=guest_email, rooms_required=rooms_required, total_guest=total_guest, purpose=purpose,
-                                                         arrival_date=arrival_date, arrival_time=arrival_time, departure_date=departure_date, departure_time=departure_time, nationality=nationality,room_type=room_type)
-            newBooking.save()
-            messages.success(request, "Room request submitted successfully!")
-
-            
-            # Get the caretaker for the selected hall
-            hall_caretaker = HallCaretaker.objects.get(hall=hall)
-            caretaker = hall_caretaker.staff.id.user
-            # Send notification to caretaker
-            hostel_notifications(sender=request.user, recipient=caretaker, type='guestRoom_request')
-
+        if not form.is_valid():
+            messages.error(request, "Invalid booking details. Please correct and retry.")
             return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
-        else:
-            messages.error(request, "Something went wrong")
-            return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+        try:
+            services.submitGuestRoomBookingService(
+                user=request.user,
+                guest_name=form.cleaned_data['guest_name'],
+                guest_phone=form.cleaned_data['guest_phone'],
+                guest_email=form.cleaned_data.get('guest_email', ''),
+                guest_address=form.cleaned_data.get('guest_address', ''),
+                rooms_required=form.cleaned_data['rooms_required'],
+                total_guest=form.cleaned_data['total_guest'],
+                purpose=form.cleaned_data['purpose'],
+                arrival_date=form.cleaned_data['arrival_date'],
+                arrival_time=form.cleaned_data['arrival_time'],
+                departure_date=form.cleaned_data['departure_date'],
+                departure_time=form.cleaned_data['departure_time'],
+                nationality=form.cleaned_data.get('nationality', ''),
+                room_type=form.cleaned_data['room_type'],
+            )
+            messages.success(request, "Guest room request submitted successfully.")
+        except (services.InvalidOperationError, services.RoomNotAvailableError) as exc:
+            messages.error(request, str(exc))
+        except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
+            messages.error(request, str(exc))
+        return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
+
+    return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
 
 
 @login_required
 def update_guest_room(request):
     if request.method == "POST":
         if 'accept_request' in request.POST:
-            status = request.POST['status']
-            guest_room_request = GuestRoomBooking.objects.get(
-                pk=request.POST['accept_request'])
-            guest_room_instance = GuestRoom.objects.get(
-                hall=guest_room_request.hall, room=request.POST['guest_room_id'])
+            booking_id = request.POST.get('accept_request')
+            room_label = request.POST.get('guest_room_id')
+            try:
+                booking = selectors.get_booking_by_id(int(booking_id))
+                room = GuestRoom.objects.filter(hall=booking.hall, room=room_label).first()
+                if not room:
+                    messages.error(request, "Selected room is invalid.")
+                    return HttpResponseRedirect(reverse("hostelmanagement:hostel_view"))
 
-            # Assign the guest room ID to guest_room_id field
-            guest_room_request.guest_room_id = str(guest_room_instance.id)
-
-            # Update the assigned guest room's occupancy details
-            guest_room_instance.occupied_till = guest_room_request.departure_date
-            guest_room_instance.vacant = False  # Mark the room as occupied
-            guest_room_instance.save()
-
-            # Update the occupied_till field of the room_booked
-            room_booked = GuestRoom.objects.get(
-                hall=guest_room_request.hall, room=request.POST['guest_room_id'])
-            room_booked.occupied_till = guest_room_request.departure_date
-            room_booked.save()
-
-            # Save the guest room request after updating the fields
-            guest_room_request.status = status
-            guest_room_request.save()
-            messages.success(request, "Request accepted successfully!")
-
-            hostel_notifications(sender=request.user,recipient=guest_room_request.intender,type='guestRoom_accept')
-
+                services.decideGuestRoomBookingService(
+                    user=request.user,
+                    booking_id=int(booking_id),
+                    decision='approved',
+                    guest_room_id=room.id,
+                    comment=request.POST.get('decision_comment', ''),
+                )
+                messages.success(request, "Request approved successfully.")
+            except Exception as exc:
+                messages.error(request, str(exc))
 
         elif 'reject_request' in request.POST:
-            guest_room_request = GuestRoomBooking.objects.get(
-                pk=request.POST['reject_request'])
-            guest_room_request.status = 'Rejected'
-            guest_room_request.save()
-
-            messages.success(request, "Request rejected successfully!")
-
-            hostel_notifications(sender=request.user,recipient=guest_room_request.intender,type='guestRoom_reject')
+            booking_id = request.POST.get('reject_request')
+            rejection_reason = request.POST.get('decision_comment') or request.POST.get('rejection_reason') or 'Rejected by caretaker.'
+            try:
+                services.decideGuestRoomBookingService(
+                    user=request.user,
+                    booking_id=int(booking_id),
+                    decision='rejected',
+                    comment=rejection_reason,
+                )
+                messages.success(request, "Request rejected successfully.")
+            except Exception as exc:
+                messages.error(request, str(exc))
 
         else:
             messages.error(request, "Invalid request!")
@@ -2128,15 +2883,653 @@ def update_guest_room(request):
 
 def available_guestrooms_api(request):
     if request.method == 'GET':
-        
         hall_id = request.GET.get('hall_id')
         room_type = request.GET.get('room_type')
+        arrival_date = request.GET.get('arrival_date')
+        departure_date = request.GET.get('departure_date')
+        rooms_required = request.GET.get('rooms_required', 1)
+
+        if not room_type:
+            return JsonResponse({'error': 'room_type is required.'}, status=400)
+
+        if arrival_date and departure_date:
+            try:
+                availability = services.checkGuestRoomAvailabilityService(
+                    user=request.user,
+                    start_date=datetime.strptime(arrival_date, '%Y-%m-%d').date(),
+                    end_date=datetime.strptime(departure_date, '%Y-%m-%d').date(),
+                    room_type=room_type,
+                    rooms_required=int(rooms_required),
+                )
+                return JsonResponse(availability, status=200)
+            except Exception as exc:
+                return JsonResponse({'error': str(exc)}, status=400)
 
         if hall_id and room_type:
             available_rooms_count = GuestRoom.objects.filter(hall_id=hall_id, room_type=room_type, vacant=True).count()
             return JsonResponse({'available_rooms_count': available_rooms_count})
 
     return JsonResponse({'error': 'Invalid request'}, status=400)
+
+
+def _serialize_guest_booking(booking):
+    """Serialize guest booking model for API responses."""
+    def _safe_iso(value):
+        if value is None:
+            return None
+        if hasattr(value, 'isoformat'):
+            return value.isoformat()
+        return str(value)
+
+    return {
+        'id': booking.id,
+        'hall_id': booking.hall.hall_id if booking.hall else None,
+        'hall_name': booking.hall.hall_name if booking.hall else None,
+        'student_username': booking.intender.username if booking.intender else None,
+        'guest_name': booking.guest_name,
+        'guest_phone': booking.guest_phone,
+        'guest_email': booking.guest_email,
+        'guest_address': booking.guest_address,
+        'rooms_required': booking.rooms_required,
+        'guest_room_id': booking.guest_room_id,
+        'total_guest': booking.total_guest,
+        'purpose': booking.purpose,
+        'arrival_date': _safe_iso(booking.arrival_date),
+        'arrival_time': _safe_iso(booking.arrival_time),
+        'departure_date': _safe_iso(booking.departure_date),
+        'departure_time': _safe_iso(booking.departure_time),
+        'status': booking.status,
+        'booking_date': _safe_iso(booking.booking_date),
+        'nationality': booking.nationality,
+        'room_type': booking.room_type,
+        'rejection_reason': booking.rejection_reason,
+        'decision_comment': booking.decision_comment,
+        'decision_at': _safe_iso(booking.decision_at),
+        'checked_in_at': _safe_iso(booking.checked_in_at),
+        'checked_out_at': _safe_iso(booking.checked_out_at),
+        'id_proof_type': booking.id_proof_type,
+        'id_proof_number': booking.id_proof_number,
+        'inspection_notes': booking.inspection_notes,
+        'damage_report': booking.damage_report,
+        'damage_amount': float(booking.damage_amount or 0),
+        'completed_with_damages': booking.completed_with_damages,
+        'booking_charge_per_day': float(booking.booking_charge_per_day or 0),
+        'total_charge': float(booking.total_charge or 0),
+        'modified_count': booking.modified_count,
+        'last_modified_at': _safe_iso(booking.last_modified_at),
+    }
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def checkGuestRoomAvailabilityController(request):
+    """Student checks guest room availability for selected dates."""
+    arrival_date = request.query_params.get('arrival_date')
+    departure_date = request.query_params.get('departure_date')
+    room_type = request.query_params.get('room_type')
+    rooms_required = request.query_params.get('rooms_required', 1)
+
+    if not arrival_date or not departure_date or not room_type:
+        return Response(
+            {'error': 'arrival_date, departure_date and room_type are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        payload = services.checkGuestRoomAvailabilityService(
+            user=request.user,
+            start_date=date.fromisoformat(arrival_date),
+            end_date=date.fromisoformat(departure_date),
+            room_type=room_type,
+            rooms_required=int(rooms_required),
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitGuestRoomBookingController(request):
+    """Student submits guest room booking request."""
+    payload = request.data
+    try:
+        booking = services.submitGuestRoomBookingService(
+            user=request.user,
+            guest_name=payload.get('guest_name', ''),
+            guest_phone=payload.get('guest_phone', ''),
+            guest_email=payload.get('guest_email', ''),
+            guest_address=payload.get('guest_address', ''),
+            rooms_required=int(payload.get('rooms_required', 1)),
+            total_guest=int(payload.get('total_guest', 1)),
+            purpose=payload.get('purpose', ''),
+            arrival_date=date.fromisoformat(payload.get('arrival_date', '')),
+            arrival_time=payload.get('arrival_time'),
+            departure_date=date.fromisoformat(payload.get('departure_date', '')),
+            departure_time=payload.get('departure_time'),
+            nationality=payload.get('nationality', ''),
+            room_type=payload.get('room_type', RoomType.SINGLE),
+        )
+        return Response(
+            {
+                'message': 'Booking request submitted successfully.',
+                'request_id': booking.id,
+                'booking': _serialize_guest_booking(booking),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def myGuestRoomBookingsController(request):
+    """Student views own booking history."""
+    try:
+        bookings = services.getStudentGuestBookingsService(user=request.user)
+        return Response([_serialize_guest_booking(booking) for booking in bookings], status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def guestRoomBookingDetailController(request, booking_id):
+    """Student views one booking in detail."""
+    try:
+        booking = services.getStudentGuestBookingDetailService(user=request.user, booking_id=booking_id)
+        return Response(_serialize_guest_booking(booking), status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def modifyGuestRoomBookingController(request, booking_id):
+    """Student modifies pending booking request."""
+    payload = request.data
+    try:
+        booking = services.modifyGuestRoomBookingService(
+            user=request.user,
+            booking_id=booking_id,
+            guest_name=payload.get('guest_name', ''),
+            guest_phone=payload.get('guest_phone', ''),
+            guest_email=payload.get('guest_email', ''),
+            guest_address=payload.get('guest_address', ''),
+            rooms_required=int(payload.get('rooms_required', 1)),
+            total_guest=int(payload.get('total_guest', 1)),
+            purpose=payload.get('purpose', ''),
+            arrival_date=date.fromisoformat(payload.get('arrival_date', '')),
+            arrival_time=payload.get('arrival_time'),
+            departure_date=date.fromisoformat(payload.get('departure_date', '')),
+            departure_time=payload.get('departure_time'),
+            nationality=payload.get('nationality', ''),
+            room_type=payload.get('room_type', RoomType.SINGLE),
+        )
+        return Response(
+            {
+                'message': 'Booking request modified and re-submitted as pending.',
+                'booking': _serialize_guest_booking(booking),
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def cancelGuestRoomBookingController(request, booking_id):
+    """Student cancels booking before check-in date."""
+    try:
+        booking = services.cancelGuestRoomBookingService(
+            user=request.user,
+            booking_id=booking_id,
+            cancel_reason=request.data.get('cancel_reason', ''),
+        )
+        return Response(
+            {
+                'message': 'Booking cancelled successfully.',
+                'booking': _serialize_guest_booking(booking),
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerPendingGuestBookingsController(request):
+    """Caretaker dashboard: pending guest room requests."""
+    try:
+        bookings = services.getCaretakerPendingGuestBookingsService(user=request.user)
+        return Response([_serialize_guest_booking(booking) for booking in bookings], status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerDecideGuestBookingController(request, booking_id):
+    """Caretaker approves/rejects booking with reason and room assignment."""
+    try:
+        booking = services.decideGuestRoomBookingService(
+            user=request.user,
+            booking_id=booking_id,
+            decision=request.data.get('decision', ''),
+            guest_room_id=request.data.get('guest_room_id'),
+            comment=request.data.get('comment', ''),
+        )
+        return Response(
+            {
+                'message': 'Booking decision recorded successfully.',
+                'booking': _serialize_guest_booking(booking),
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerCheckInGuestBookingController(request, booking_id):
+    """Caretaker performs guest check-in."""
+    try:
+        booking = services.checkInGuestBookingService(
+            user=request.user,
+            booking_id=booking_id,
+            id_proof_type=request.data.get('id_proof_type', ''),
+            id_proof_number=request.data.get('id_proof_number', ''),
+            notes=request.data.get('checkin_notes', ''),
+        )
+        return Response(
+            {
+                'message': 'Guest check-in completed.',
+                'booking': _serialize_guest_booking(booking),
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerCheckOutGuestBookingController(request, booking_id):
+    """Caretaker performs guest check-out and optional damage processing."""
+    try:
+        booking = services.checkOutGuestBookingService(
+            user=request.user,
+            booking_id=booking_id,
+            inspection_notes=request.data.get('inspection_notes', ''),
+            damage_report=request.data.get('damage_report', ''),
+            damage_amount=request.data.get('damage_amount', 0),
+        )
+        return Response(
+            {
+                'message': 'Guest check-out completed.',
+                'booking': _serialize_guest_booking(booking),
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def guestRoomPolicyController(request):
+    """Caretaker gets/updates guest room policy and charges."""
+    if request.method == 'GET':
+        try:
+            policy = services.getGuestRoomPolicyService(user=request.user)
+            return Response(
+                {
+                    'feature_enabled': policy.feature_enabled,
+                    'charge_per_day': float(policy.charge_per_day),
+                    'min_advance_days': policy.min_advance_days,
+                    'max_advance_days': policy.max_advance_days,
+                    'max_booking_duration_days': policy.max_booking_duration_days,
+                    'max_concurrent_bookings_per_student': policy.max_concurrent_bookings_per_student,
+                    'eligibility_note': policy.eligibility_note,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        feature_enabled_raw = request.data.get('feature_enabled', True)
+        if isinstance(feature_enabled_raw, str):
+            feature_enabled = feature_enabled_raw.strip().lower() in ['1', 'true', 'yes', 'on']
+        else:
+            feature_enabled = bool(feature_enabled_raw)
+
+        policy = services.upsertGuestRoomPolicyService(
+            user=request.user,
+            feature_enabled=feature_enabled,
+            charge_per_day=request.data.get('charge_per_day', 0),
+            min_advance_days=int(request.data.get('min_advance_days', 0)),
+            max_advance_days=int(request.data.get('max_advance_days', 90)),
+            max_booking_duration_days=int(request.data.get('max_booking_duration_days', 7)),
+            max_concurrent_bookings_per_student=int(request.data.get('max_concurrent_bookings_per_student', 1)),
+            eligibility_note=request.data.get('eligibility_note', ''),
+        )
+        return Response(
+            {
+                'message': 'Guest room policy updated successfully.',
+                'policy': {
+                    'feature_enabled': policy.feature_enabled,
+                    'charge_per_day': float(policy.charge_per_day),
+                    'min_advance_days': policy.min_advance_days,
+                    'max_advance_days': policy.max_advance_days,
+                    'max_booking_duration_days': policy.max_booking_duration_days,
+                    'max_concurrent_bookings_per_student': policy.max_concurrent_bookings_per_student,
+                    'eligibility_note': policy.eligibility_note,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def guestRoomBookingReportController(request):
+    """Caretaker generates booking report for a date range."""
+    start_date = request.query_params.get('start_date')
+    end_date = request.query_params.get('end_date')
+
+    if not start_date or not end_date:
+        return Response({'error': 'start_date and end_date are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        report = services.getGuestRoomBookingReportService(
+            user=request.user,
+            start_date=date.fromisoformat(start_date),
+            end_date=date.fromisoformat(end_date),
+        )
+        return Response(report, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitRoomChangeRequestController(request):
+    """Student submits room change request."""
+    try:
+        payload = services.submitRoomChangeRequestService(
+            user=request.user,
+            reason=request.data.get('reason', ''),
+            preferred_room=request.data.get('preferred_room', ''),
+            preferred_hall=request.data.get('preferred_hall', ''),
+        )
+        return Response(
+            {
+                'message': 'Room change request submitted successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def myRoomChangeRequestsController(request):
+    """Student views own room change request history."""
+    try:
+        requests_payload = services.getMyRoomChangeRequestsService(user=request.user)
+        return Response(requests_payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def roomChangeRequestsForReviewController(request):
+    """Caretaker/Warden fetch requests in own hall for review and processing."""
+    statuses = request.query_params.getlist('status')
+    statuses = [value for value in statuses if value]
+    try:
+        requests_payload = services.getRoomChangeRequestsForReviewService(
+            user=request.user,
+            statuses=statuses or None,
+        )
+        return Response(requests_payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerRoomChangeDecisionController(request, request_id):
+    """Caretaker submits review decision on room change request."""
+    try:
+        payload = services.caretakerReviewRoomChangeRequestService(
+            user=request.user,
+            room_change_request_id=request_id,
+            decision=request.data.get('decision', ''),
+            remarks=request.data.get('remarks', ''),
+        )
+        return Response(
+            {
+                'message': 'Caretaker decision recorded successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def wardenRoomChangeDecisionController(request, request_id):
+    """Warden submits compliance decision on room change request."""
+    try:
+        payload = services.wardenReviewRoomChangeRequestService(
+            user=request.user,
+            room_change_request_id=request_id,
+            decision=request.data.get('decision', ''),
+            remarks=request.data.get('remarks', ''),
+        )
+        return Response(
+            {
+                'message': 'Warden decision recorded successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def allocateRoomChangeRequestController(request, request_id):
+    """Caretaker allocates new room for approved room change request."""
+    try:
+        payload = services.allocateApprovedRoomChangeRequestService(
+            user=request.user,
+            room_change_request_id=request_id,
+            room_id=request.data.get('room_id'),
+            room_label=request.data.get('room_no') or request.data.get('room_label'),
+            notes=request.data.get('allocation_notes', ''),
+        )
+        return Response(
+            {
+                'message': 'Room allocation updated successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def inventoryDashboardController(request):
+    """UC-026/027/028 inventory dashboard list by role scope."""
+    try:
+        payload = services.getInventoryDashboardService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitInventoryInspectionController(request):
+    """UC-026 caretaker submits inventory inspection results."""
+    try:
+        payload = services.submitInventoryInspectionService(
+            user=request.user,
+            items=request.data.get('items', []),
+            remarks=request.data.get('remarks', ''),
+        )
+        return Response(
+            {
+                'message': 'Inventory inspection saved successfully.',
+                'inspection': payload,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def inventoryInspectionsController(request):
+    """List inventory inspection records."""
+    try:
+        payload = services.getInventoryInspectionsService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitResourceRequirementRequestController(request):
+    """UC-027 caretaker submits resource requirement request."""
+    try:
+        payload = services.submitResourceRequirementRequestService(
+            user=request.user,
+            request_type=request.data.get('request_type', ''),
+            items=request.data.get('items', []),
+            justification=request.data.get('justification', ''),
+        )
+        return Response(
+            {
+                'message': 'Resource requirement request submitted successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def resourceRequirementRequestsController(request):
+    """List resource requirement requests for review/track."""
+    try:
+        payload = services.getResourceRequestsService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def reviewResourceRequirementRequestController(request, request_id):
+    """Warden/admin reviews resource request."""
+    try:
+        payload = services.reviewResourceRequestService(
+            user=request.user,
+            request_id=request_id,
+            decision=request.data.get('decision', ''),
+            remarks=request.data.get('remarks', ''),
+        )
+        return Response(
+            {
+                'message': 'Resource request review submitted successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def updateInventoryRecordController(request, inventory_id):
+    """UC-028 caretaker updates inventory record with audit logging."""
+    try:
+        payload = services.auditedInventoryUpdateService(
+            user=request.user,
+            inventory_id=inventory_id,
+            quantity=request.data.get('quantity'),
+            condition_status=request.data.get('condition_status'),
+            reason=request.data.get('reason', ''),
+        )
+        return Response(
+            {
+                'message': 'Inventory record updated successfully.',
+                'inventory': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def inventoryUpdateLogsController(request):
+    """List inventory update logs for audit."""
+    try:
+        payload = services.getInventoryUpdateLogsService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # //Caretaker can approve or reject leave applied by the student
@@ -2209,13 +3602,21 @@ def impose_fine_view(request):
     return HttpResponse(f'<script>alert("You are not authorized to access this page"); window.location.href = "/hostelmanagement/"</script>')
 
 
-def _serialize_fine(fine):
+def _serialize_fine(fine, repeat_offender_student_ids=None, fine_count_by_student=None):
     caretaker_name = None
     if fine.caretaker and fine.caretaker.id and fine.caretaker.id.user:
         caretaker_name = fine.caretaker.id.user.username
 
     status_value = fine.status.value if hasattr(fine.status, 'value') else str(fine.status)
     category_value = fine.category.value if hasattr(fine.category, 'value') else str(fine.category)
+    student_pk = fine.student_id
+    repeat_offender = False
+    student_fine_count = None
+
+    if repeat_offender_student_ids is not None:
+        repeat_offender = student_pk in repeat_offender_student_ids
+    if fine_count_by_student is not None:
+        student_fine_count = fine_count_by_student.get(student_pk, 0)
 
     return {
         'fine_id': fine.fine_id,
@@ -2230,7 +3631,40 @@ def _serialize_fine(fine):
         'reason': fine.reason,
         'evidence': fine.evidence.url if fine.evidence else None,
         'created_at': fine.created_at.isoformat() if fine.created_at else None,
+        'repeat_offender': repeat_offender,
+        'fine_count_for_student': student_fine_count,
     }
+
+
+def _resolve_repeat_offender_threshold(request):
+    """Resolve threshold from query param; defaults to 3 and must be >= 1."""
+    raw_threshold = request.query_params.get('repeat_offender_threshold')
+    if raw_threshold in (None, ''):
+        return 3
+
+    try:
+        threshold = int(raw_threshold)
+    except (TypeError, ValueError):
+        raise ValueError('repeat_offender_threshold must be an integer >= 1.')
+
+    if threshold < 1:
+        raise ValueError('repeat_offender_threshold must be an integer >= 1.')
+    return threshold
+
+
+def _build_repeat_offender_metadata(fines, threshold):
+    """Compute per-student fine counts and repeat-offender flags in-memory."""
+    fine_count_by_student = {}
+    for fine in fines:
+        student_pk = fine.student_id
+        fine_count_by_student[student_pk] = fine_count_by_student.get(student_pk, 0) + 1
+
+    repeat_offender_student_ids = {
+        student_pk
+        for student_pk, count in fine_count_by_student.items()
+        if count >= threshold
+    }
+    return repeat_offender_student_ids, fine_count_by_student
 
 
 @api_view(['GET'])
@@ -2246,16 +3680,7 @@ def getCaretakerStudentsController(request):
     if mapping.role != 'caretaker':
         return Response({'error': 'Only caretaker can access hostel student list.'}, status=status.HTTP_403_FORBIDDEN)
 
-    students = selectors.get_students_in_hall(hall=mapping.hall)
-    payload = [
-        {
-            'id__user__username': student.id.user.username,
-            'programme': student.programme,
-            'room_no': student.room_no,
-            'hall_no': student.hall_no,
-        }
-        for student in students
-    ]
+    payload = services.searchStudentsService(user=request.user, query=None)
     return Response(payload, status=status.HTTP_200_OK)
 
 
@@ -2672,11 +4097,32 @@ def imposeFineController(request):
 def getHostelFinesController(request):
     """Fetch fines for caretaker's hostel only."""
     try:
+        threshold = _resolve_repeat_offender_threshold(request)
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
         fines = services.getHostelFinesService(user=request.user)
     except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
         return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
-    return Response({'fines': [_serialize_fine(fine) for fine in fines]}, status=status.HTTP_200_OK)
+    fines_list = list(fines)
+    repeat_offender_student_ids, fine_count_by_student = _build_repeat_offender_metadata(fines_list, threshold)
+
+    return Response(
+        {
+            'repeat_offender_threshold': threshold,
+            'fines': [
+                _serialize_fine(
+                    fine,
+                    repeat_offender_student_ids=repeat_offender_student_ids,
+                    fine_count_by_student=fine_count_by_student,
+                )
+                for fine in fines_list
+            ],
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(['GET'])
@@ -2685,13 +4131,31 @@ def getHostelFinesController(request):
 def getStudentFinesController(request):
     """Fetch fines visible to authenticated student only."""
     try:
+        threshold = _resolve_repeat_offender_threshold(request)
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
         fines = services.getStudentFinesService(user=request.user)
     except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
         return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
     except services.StudentNotFoundError as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response([_serialize_fine(fine) for fine in fines], status=status.HTTP_200_OK)
+    fines_list = list(fines)
+    repeat_offender_student_ids, fine_count_by_student = _build_repeat_offender_metadata(fines_list, threshold)
+
+    return Response(
+        [
+            _serialize_fine(
+                fine,
+                repeat_offender_student_ids=repeat_offender_student_ids,
+                fine_count_by_student=fine_count_by_student,
+            )
+            for fine in fines_list
+        ],
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(['POST'])
@@ -2798,6 +4262,30 @@ def assignRoomController(request):
     )
 
 
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('student')
+def createStudentGroupController(request):
+    """Student creates a room group (self + 2 members)."""
+    payload = request.data or {}
+    member_roll_numbers = payload.get('member_roll_numbers') or payload.get('roll_numbers') or []
+    if not isinstance(member_roll_numbers, list):
+        return Response({'error': 'member_roll_numbers must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        group = services.createStudentGroupService(
+            user=request.user,
+            member_roll_numbers=member_roll_numbers,
+        )
+    except (services.StudentNotFoundError, services.UserHallMappingMissingError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except (services.UnauthorizedAccessError, services.InvalidOperationError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'message': 'Group created successfully.', 'group': group}, status=status.HTTP_201_CREATED)
+
+
 @api_view(['GET'])
 @authentication_classes([SessionAuthentication, TokenAuthentication])
 @permission_classes([IsAuthenticated])
@@ -2810,6 +4298,106 @@ def getStudentRoomController(request):
     except (services.UserHallMappingMissingError, services.UnauthorizedAccessError) as exc:
         return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
     return Response(room_data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin')
+def adminBulkAllotRoomsController(request):
+    """Admin alias endpoint for grouped bulk allotment workflow."""
+    hall_id = (request.data.get('hall_id') or '').strip()
+    if not hall_id:
+        return Response({'error': 'hall_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        hall = Hall.objects.get(hall_id=hall_id)
+    except Hall.DoesNotExist:
+        return Response({'error': 'Hostel not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    source = (request.data.get('source') or 'batch').strip().lower()
+    selected_student_ids = request.data.get('student_ids') or []
+    force_reassign = bool(request.data.get('force_reassign', False))
+
+    try:
+        result = lifecycle_services.AllotmentService.bulk_allot_students(
+            hall=hall,
+            actor=request.user,
+            source=source,
+            selected_student_ids=selected_student_ids,
+            force_reassign=force_reassign,
+        )
+    except lifecycle_services.WorkflowValidationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'message': 'Bulk room allotment completed.', 'result': result}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('caretaker', 'warden')
+def approveRoomChangeRequestController(request):
+    """Unified approve endpoint for caretaker/warden room change review."""
+    request_id = request.data.get('request_id')
+    if not request_id:
+        return Response({'error': 'request_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    role, _ = services.resolve_hostel_rbac_role_service(user=request.user)
+    try:
+        if role == 'caretaker':
+            payload = services.caretakerReviewRoomChangeRequestService(
+                user=request.user,
+                room_change_request_id=request_id,
+                decision='Approved',
+                remarks=request.data.get('remarks', ''),
+            )
+        else:
+            payload = services.wardenReviewRoomChangeRequestService(
+                user=request.user,
+                room_change_request_id=request_id,
+                decision='Approved',
+                remarks=request.data.get('remarks', ''),
+            )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'message': 'Room change request approved.', 'request': payload}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('caretaker', 'warden')
+def rejectRoomChangeRequestController(request):
+    """Unified reject endpoint for caretaker/warden room change review."""
+    request_id = request.data.get('request_id')
+    remarks = (request.data.get('remarks') or '').strip()
+    if not request_id:
+        return Response({'error': 'request_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not remarks:
+        return Response({'error': 'remarks are required for rejection.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    role, _ = services.resolve_hostel_rbac_role_service(user=request.user)
+    try:
+        if role == 'caretaker':
+            payload = services.caretakerReviewRoomChangeRequestService(
+                user=request.user,
+                room_change_request_id=request_id,
+                decision='Rejected',
+                remarks=remarks,
+            )
+        else:
+            payload = services.wardenReviewRoomChangeRequestService(
+                user=request.user,
+                room_change_request_id=request_id,
+                decision='Rejected',
+                remarks=remarks,
+            )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'message': 'Room change request rejected.', 'request': payload}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

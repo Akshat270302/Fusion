@@ -1,227 +1,277 @@
 {% block book_guest_room %}
-<form method="POST" class="ui form" action="{% url 'hostelmanagement:book_guest_room' %}" role="form"
-    enctype="multipart/form-data" id='book_guest_room'>
-    <div class="ui active accordion field">
-        <div class="title">
-            <i class="icon dropdown"></i>
-            Book a Guest Room!
-        </div>
-        {{ form.non_field_errors }}
-        <div class="active content">
-            <div class="ui form" style="padding: 8px; padding-left: 24px; padding-right: 24px;">
-                {% csrf_token %}
-                <div class="field">
-                    <label for="{{ form.hall.id_for_label }}">
-                        Hall
-                    </label>
-                    <select class="ui dropdown" name="hall" id="id_hall" required>
-                        <option selected disabled value="">Select Hall No</option>
-                        {% for hall in all_hall %}
-                        <option value={{hall.pk}}>{{hall.hall_id}}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="two fields">
-                    <div class="field">
-                        <label>Arrival Date</label>
-                        <input type="date" name="arrival_date" id="arrival_date" min="" required value="">
-                    </div>
-                    <div class="field">
-                        <label>Departure Date</label>
-                        <input type="date" name="departure_date" id="departure_date" min="" required value="">
-                    </div>
-                </div>
-                <div class="two fields">
-                    <div class="field">
-                        <label>Arrival Time</label>
-                        <input type="Time" name="arrival_time">
-                    </div>
-                    <div class="field">
-                        <label>Departure Time</label>
-                        <input type="Time" name="departure_time">
-                    </div>
-                </div>
-                {% comment %} <div class="field">
-                    <label>Roll no.</label>
-                    <input value="" class="ui large input" name="roll_no" required
-                        onkeypress="return isNumberKey(event)">
-                    <select class="ui search fluid dropdown" name="roll_no" required>
-                        <option value="">Select</option>
-                        {% for i, students in halls_student.items %}
-                        {% for st in students %}
-                        <option value="{{st.id.user.username}}">{{st.id.user.username}}</option>
-                        {% endfor %}
-                        {%endfor%}
-                    </select>
-                </div> {% endcomment %}
+<div class="ui segment">
+  <h3 class="ui header">Request Guest Room</h3>
+  <p>Fill guest details, check room availability, review summary, and submit your request.</p>
 
-                <div class="two fields">
-                    <div class="field">
-                        {{ form.guests.errors }}
-                        <label for="{{ form.guests.id_for_label }}">
-                            Number of Guests</label>
-                        <input type='Number' name='total_guest' value={{ form.total_guest }}>
-                    </div>
-                    <div class="field">
-                        {{ form.nationality.errors }}
-                        <label for="{{ form.nationality.id_for_label }}">Nationality</label>
-                        <input type="text" name="nationality" value={{form.nationality}}>
-                    </div>
-                </div>
-                <div class="two fields">
-                    <div class="field">
-                        {{ form.rooms_required.errors }}
-                        <label for="{{ form.rooms_required.id_for_label }}">
-                            Number of rooms</label>
-                        <input type='Number' name='rooms_required' value={{ form.rooms_required }}>
-                    </div>
-                    <div class="field">
-                        <label for="{{ form.room_type.id_for_label }}">
-                            Room Type
-                        </label>
-                        <select class="ui dropdown" name="room_type" id="id_room_type" required>
-                            <option selected disabled value="">Select Room Type</option>
-                            <option value="single">Single</option>
-                            <option value="double">Double</option>
-                            <option value="triple">Triple</option>
-                        </select>
-                    </div>
-
-
-                </div>
-                <div class="two fields">
-                    <!-- Other form fields here -->
-                    <div class="field">
-                        <label>Available Rooms</label>
-                        <div id="available_rooms_count" class="ui label"></div>
-                    </div>
-                </div>
-                <!-- <span id="available_rooms_count"></span> -->
-
-
-                <div class="two fields">
-
-                    <div class="field">
-                        {{ form.guest_name.errors }}
-                        <label for="{{ form.guest_name.id_for_label }}">
-                            Name of guest</label>
-                        <input type='text' name='guest_name' value={{ form.guest_name }}>
-                    </div>
-                    <div class="field">
-                        {{ form.guest_address.errors }}
-                        <label for="{{ form.guest_address.id_for_label }}">
-                            Guest Address</label>
-                        <input type='text' name='guest_address' value={{ form.guest_address }}>
-                    </div>
-
-                </div>
-
-                <div class="two fields">
-                    <div class="field">
-                        {{ form.guest_email.errors }}
-                        <label for="{{ form.guest_email.id_for_label }}">
-                            Guest Email</label>
-                        <input type='Email' name='guest_email' value={{ form.guest_email }}>
-                    </div>
-                    <div class="field">
-                        {{ form.guest_phone.errors }}
-                        <label for="{{ form.guest_phone.id_for_label }}">
-                            Guest Phone Number</label>
-                        <input type='number' name='guest_phone' id="guest_phone_input" value={{ form.guest_phone }}>
-                        <span id="phone_error" style="color: red;"></span>
-                    </div>
-                </div>
-
-
-                <div class="field">
-                    {{ form.purpose.errors }}
-                    <label for="{{ form.purpose.id_for_label }}">
-                        Purpose
-                    </label>
-                    <textarea name="purpose">{{ form.purpose }}</textarea>
-                </div>
-
-
-
-
-                <div class="two fields">
-                    <div class="four wide field">
-                        <label><br></label>
-                        <button class="ui fluid large primary button" type="submit"
-                            onclick="checkInputs('book_guest_room')">
-                            Submit
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
+  <form id="guest-room-request-form" class="ui form">
+    {% csrf_token %}
+    <div class="two fields">
+      <div class="field">
+        <label>Check-in Date</label>
+        <input type="date" name="arrival_date" id="arrival_date" required>
+      </div>
+      <div class="field">
+        <label>Check-out Date</label>
+        <input type="date" name="departure_date" id="departure_date" required>
+      </div>
     </div>
-</form>
+
+    <div class="two fields">
+      <div class="field">
+        <label>Check-in Time</label>
+        <input type="time" name="arrival_time" id="arrival_time" required>
+      </div>
+      <div class="field">
+        <label>Check-out Time</label>
+        <input type="time" name="departure_time" id="departure_time" required>
+      </div>
+    </div>
+
+    <div class="three fields">
+      <div class="field">
+        <label>Room Type</label>
+        <select name="room_type" id="room_type" class="ui dropdown" required>
+          <option value="">Select room type</option>
+          <option value="single">Single</option>
+          <option value="double">Double</option>
+          <option value="triple">Triple</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Rooms Required</label>
+        <input type="number" name="rooms_required" id="rooms_required" min="1" value="1" required>
+      </div>
+      <div class="field">
+        <label>Total Guests</label>
+        <input type="number" name="total_guest" id="total_guest" min="1" value="1" required>
+      </div>
+    </div>
+
+    <button type="button" class="ui teal button" id="check-availability-btn">Check Availability</button>
+
+    <div id="availability-section" class="ui hidden message" style="margin-top: 1rem;"></div>
+
+    <h4 class="ui dividing header">Guest Details</h4>
+    <div class="two fields">
+      <div class="field">
+        <label>Guest Name</label>
+        <input type="text" name="guest_name" id="guest_name" required>
+      </div>
+      <div class="field">
+        <label>Guest Phone</label>
+        <input type="text" name="guest_phone" id="guest_phone" maxlength="10" required>
+      </div>
+    </div>
+
+    <div class="two fields">
+      <div class="field">
+        <label>Guest Email</label>
+        <input type="email" name="guest_email" id="guest_email">
+      </div>
+      <div class="field">
+        <label>Nationality</label>
+        <input type="text" name="nationality" id="nationality">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Guest Address</label>
+      <input type="text" name="guest_address" id="guest_address">
+    </div>
+
+    <div class="field">
+      <label>Purpose/Reason</label>
+      <textarea name="purpose" id="purpose" rows="3" required></textarea>
+    </div>
+
+    <div id="booking-summary" class="ui info message hidden"></div>
+
+    <button type="submit" class="ui primary button" id="submit-booking-btn" disabled>Submit Booking Request</button>
+    <div id="guest-room-request-feedback" class="ui hidden message" style="margin-top: 1rem;"></div>
+  </form>
+</div>
 
 <script>
+(function() {
+  const form = document.getElementById('guest-room-request-form');
+  const availabilitySection = document.getElementById('availability-section');
+  const summarySection = document.getElementById('booking-summary');
+  const feedback = document.getElementById('guest-room-request-feedback');
+  const submitBtn = document.getElementById('submit-booking-btn');
+  const checkBtn = document.getElementById('check-availability-btn');
 
-    // Function to fetch available rooms count via AJAX
-    function fetchAvailableRoomsCount() {
-        console.log('Fetching available rooms count...');
-        var hallId = document.getElementById('id_hall').value;
-        var roomType = document.getElementById('id_room_type').value;
-        console.log('Selected Hall ID:', hallId);
-        console.log('Selected Room Type:', roomType);
+  let lastAvailability = null;
 
-        // Check if both hall and room type are selected
-        if (hallId && roomType) {
-            // AJAX request to fetch available rooms count
-            fetch(`/hostelmanagement/available_guest_rooms/?hall_id=${hallId}&room_type=${roomType}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Received response:', data);
-                    document.getElementById('available_rooms_count').innerText = data.available_rooms_count;
-                })
-                .catch(error => {
-                    console.error('Error fetching available rooms count:', error);
-                });
-        }
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  }
+
+  function showMessage(el, type, text) {
+    el.className = `ui ${type} message`;
+    el.textContent = text;
+  }
+
+  function hideMessage(el) {
+    el.className = 'ui hidden message';
+    el.textContent = '';
+  }
+
+  function readForm() {
+    return {
+      arrival_date: document.getElementById('arrival_date').value,
+      departure_date: document.getElementById('departure_date').value,
+      arrival_time: document.getElementById('arrival_time').value,
+      departure_time: document.getElementById('departure_time').value,
+      room_type: document.getElementById('room_type').value,
+      rooms_required: Number(document.getElementById('rooms_required').value || 0),
+      total_guest: Number(document.getElementById('total_guest').value || 0),
+      guest_name: document.getElementById('guest_name').value.trim(),
+      guest_phone: document.getElementById('guest_phone').value.trim(),
+      guest_email: document.getElementById('guest_email').value.trim(),
+      guest_address: document.getElementById('guest_address').value.trim(),
+      purpose: document.getElementById('purpose').value.trim(),
+      nationality: document.getElementById('nationality').value.trim(),
+    };
+  }
+
+  function validateBeforeAvailability(data) {
+    if (!data.arrival_date || !data.departure_date || !data.room_type || data.rooms_required < 1) {
+      return 'Please provide dates, room type and rooms required.';
+    }
+    if (data.departure_date <= data.arrival_date) {
+      return 'Check-out date must be after check-in date.';
+    }
+    return '';
+  }
+
+  function validateBeforeSubmit(data) {
+    if (!lastAvailability || !lastAvailability.is_available) {
+      return 'Please run availability check and ensure rooms are available before submitting.';
+    }
+    if (!data.guest_name || !data.guest_phone || !data.purpose) {
+      return 'Guest name, guest phone and purpose are required.';
+    }
+    if (!/^\d{10}$/.test(data.guest_phone)) {
+      return 'Guest phone must be exactly 10 digits.';
+    }
+    if (!data.arrival_time || !data.departure_time) {
+      return 'Check-in and check-out time are required.';
+    }
+    return '';
+  }
+
+  async function checkAvailability() {
+    const data = readForm();
+    const error = validateBeforeAvailability(data);
+    if (error) {
+      showMessage(availabilitySection, 'negative', error);
+      submitBtn.disabled = true;
+      return;
     }
 
-    // Event listener for change in room type selection
-    document.addEventListener('DOMContentLoaded', function () {
-        console.log('DOMContentLoaded event fired.');
-        document.getElementById('id_room_type').addEventListener('change', fetchAvailableRoomsCount);
-    });
-    // // Get today's date in YYYY-MM-DD format
-    var today = new Date().toISOString().split('T')[0];
-    document.getElementById("arrival_date").value = "";
-    document.getElementById("departure_date").value = "";
-    document.getElementById("arrival_date").min = today;
-    document.getElementById("arrival_date").addEventListener("change", function () {
-        document.getElementById("departure_date").min = document.getElementById("arrival_date").value;
-    });
+    try {
+      const params = new URLSearchParams({
+        arrival_date: data.arrival_date,
+        departure_date: data.departure_date,
+        room_type: data.room_type,
+        rooms_required: String(data.rooms_required),
+      });
+      const res = await fetch(`/hostelmanagement/guest-room/availability/?${params.toString()}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      const payload = await res.json();
 
-    // Function to validate phone number
-    function validatePhoneNumber() {
-        var phoneNumber = document.getElementById('guest_phone_input').value;
-        var phoneError = document.getElementById('phone_error');
+      if (!res.ok) {
+        showMessage(availabilitySection, 'negative', payload.error || 'Could not check availability.');
+        lastAvailability = null;
+        submitBtn.disabled = true;
+        return;
+      }
 
-        // Check if phone number is exactly 10 digits
-        if (phoneNumber.length !== 10) {
-            phoneError.innerText = 'Phone number must be exactly 10 digits.';
-            return false; // Prevent form submission
-        } else {
-            phoneError.innerText = ''; // Clear error message
-            return true; // Allow form submission
-        }
+      lastAvailability = payload;
+      if (payload.is_available) {
+        showMessage(
+          availabilitySection,
+          'positive',
+          `Available: ${payload.available_count} room(s). Estimated total charge: ${payload.estimated_total_charge}`
+        );
+        summarySection.className = 'ui info message';
+        summarySection.innerHTML = `
+          <strong>Booking Summary</strong><br>
+          Hostel: ${payload.hall_name} (${payload.hall_id})<br>
+          Dates: ${data.arrival_date} to ${data.departure_date}<br>
+          Room Type: ${data.room_type}<br>
+          Rooms Required: ${data.rooms_required}<br>
+          Total Guests: ${data.total_guest}<br>
+          Charge/Day: ${payload.policy.charge_per_day}<br>
+          Estimated Total: ${payload.estimated_total_charge}
+        `;
+        submitBtn.disabled = false;
+      } else {
+        showMessage(availabilitySection, 'warning', 'No rooms available for selected dates. Try alternative dates.');
+        summarySection.className = 'ui warning message';
+        summarySection.textContent = 'No room can be allocated for the selected range at this time.';
+        submitBtn.disabled = true;
+      }
+    } catch (err) {
+      showMessage(availabilitySection, 'negative', 'Network error while checking availability.');
+      submitBtn.disabled = true;
+    }
+  }
+
+  async function submitBooking(event) {
+    event.preventDefault();
+    hideMessage(feedback);
+
+    const data = readForm();
+    const error = validateBeforeSubmit(data);
+    if (error) {
+      showMessage(feedback, 'negative', error);
+      return;
     }
 
-    // Event listener for input change in phone number field
-    document.getElementById('guest_phone_input').addEventListener('input', function () {
-        validatePhoneNumber();
-    });
+    try {
+      const res = await fetch('/hostelmanagement/guest-room/bookings/request/', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify(data),
+      });
+      const payload = await res.json();
 
-    // Event listener for form submission
-    document.getElementById('book_guest_room').addEventListener('submit', function (event) {
-        if (!validatePhoneNumber()) {
-            event.preventDefault(); // Prevent form submission if phone number is invalid
-        }
-    });
+      if (!res.ok) {
+        showMessage(feedback, 'negative', payload.error || 'Booking submission failed.');
+        return;
+      }
+
+      showMessage(feedback, 'positive', `Booking request submitted successfully. Request ID: ${payload.request_id}`);
+      form.reset();
+      hideMessage(availabilitySection);
+      summarySection.className = 'ui hidden message';
+      summarySection.textContent = '';
+      submitBtn.disabled = true;
+      lastAvailability = null;
+    } catch (err) {
+      showMessage(feedback, 'negative', 'Network error while submitting booking request.');
+    }
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('arrival_date').setAttribute('min', today);
+  document.getElementById('departure_date').setAttribute('min', today);
+  document.getElementById('arrival_date').addEventListener('change', function() {
+    document.getElementById('departure_date').setAttribute('min', this.value);
+  });
+
+  checkBtn.addEventListener('click', checkAvailability);
+  form.addEventListener('submit', submitBooking);
+})();
 </script>
 {% endblock %}

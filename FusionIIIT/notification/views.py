@@ -477,8 +477,36 @@ def hostel_notifications(sender, recipient, type):
         verb = "You have a new Leave Request."
     elif type == "guestRoom_request":
         verb = "You have a new Guest Room Request."
+    elif type == "guestRoom_modified":
+        verb = "A guest room request has been modified and needs your review."
+    elif type == "guestRoom_cancelled":
+        verb = "A guest room booking has been cancelled by the student."
+    elif type == "guestRoom_checkout":
+        verb = "Your guest room booking has been checked out successfully."
     elif type == "fine_imposed":
         verb = "A fine has been imposed on you."
+    elif type == "roomChange_request":
+        verb = "You have a new room change request to review."
+    elif type == "roomChange_reviewed":
+        verb = "Your room change request has been reviewed."
+    elif type == "roomChange_reject":
+        verb = "Your room change request has been rejected."
+    elif type == "roomChange_allocated":
+        verb = "Your room has been re-allotted successfully."
+    elif type == "inventory_request":
+        verb = "You have a new inventory resource request for review."
+    elif type == "inventory_request_approved":
+        verb = "Your inventory resource request has been approved."
+    elif type == "inventory_request_rejected":
+        verb = "Your inventory resource request has been rejected."
+    elif type == "warden_assignment":
+        verb = "You have been assigned as a Hostel Warden."
+    elif type == "caretaker_assignment":
+        verb = "You have been assigned as a Hostel Caretaker."
+    elif type == "room_allotted":
+        verb = "Your hostel room has been allotted."
+    elif type == "caretaker_bulk_allotment":
+        verb = "Bulk room allotment has been completed for your hostel."
     
     notify.send(sender=sender,recipient=recipient,url=url,module=module,verb=verb)
     

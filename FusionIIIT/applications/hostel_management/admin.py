@@ -21,7 +21,9 @@ from .models import (
     HostelAllotment,
     StudentDetails,
     GuestRoom,
+    GuestRoomPolicy,
     HostelFine,
+    RoomChangeRequest,
     HostelTransactionHistory,
     HostelHistory,
     UserHostelMapping,
@@ -80,9 +82,25 @@ class GuestRoomBookingAdmin(admin.ModelAdmin):
 
 @admin.register(GuestRoom)
 class GuestRoomAdmin(admin.ModelAdmin):
-    list_display = ['id', 'hall', 'room', 'room_type', 'vacant', 'occupied_till']
-    list_filter = ['hall', 'room_type', 'vacant']
+    list_display = ['id', 'hall', 'room', 'room_type', 'room_status', 'vacant', 'occupied_till']
+    list_filter = ['hall', 'room_type', 'room_status', 'vacant']
     search_fields = ['room', 'hall__hall_name']
+
+
+@admin.register(GuestRoomPolicy)
+class GuestRoomPolicyAdmin(admin.ModelAdmin):
+    list_display = [
+        'hall',
+        'feature_enabled',
+        'charge_per_day',
+        'min_advance_days',
+        'max_advance_days',
+        'max_booking_duration_days',
+        'max_concurrent_bookings_per_student',
+        'updated_at',
+    ]
+    list_filter = ['feature_enabled', 'hall']
+    search_fields = ['hall__hall_id', 'hall__hall_name']
 
 
 @admin.register(StaffSchedule)
@@ -183,6 +201,23 @@ class HostelFineAdmin(admin.ModelAdmin):
     list_filter = ['hall', 'status']
     search_fields = ['student_name', 'student__id__id', 'reason']
     ordering = ['fine_id']
+
+
+@admin.register(RoomChangeRequest)
+class RoomChangeRequestAdmin(admin.ModelAdmin):
+    list_display = [
+        'request_id',
+        'student',
+        'hall',
+        'status',
+        'caretaker_decision',
+        'warden_decision',
+        'created_at',
+        'allocated_at',
+    ]
+    list_filter = ['hall', 'status', 'caretaker_decision', 'warden_decision']
+    search_fields = ['request_id', 'student__id__user__username', 'reason', 'current_room_no']
+    ordering = ['-created_at']
 
 
 @admin.register(HostelTransactionHistory)

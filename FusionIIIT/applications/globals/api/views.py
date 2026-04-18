@@ -82,7 +82,18 @@ def auth_view(request):
     accessible_modules = {}
     
     for designation in designation_info:
-        module_access = ModuleAccess.objects.filter(designation__iexact=designation).first()
+        designation_candidates = [designation]
+
+        # Allow admin variants like "admin1" and "super_admin" to inherit base admin module access.
+        if 'admin' in designation.lower() and designation.lower() != 'admin':
+            designation_candidates.append('admin')
+
+        module_access = None
+        for designation_name in designation_candidates:
+            module_access = ModuleAccess.objects.filter(designation__iexact=designation_name).first()
+            if module_access:
+                break
+
         if module_access:
             filtered_modules = {}
 

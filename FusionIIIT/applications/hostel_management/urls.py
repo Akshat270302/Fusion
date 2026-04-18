@@ -44,6 +44,17 @@ urlpatterns = [
     path('notices/', views.noticeBoardController, name='notice_board_api'),
     path('create_notice/', views.createNoticeController, name='create_notice_api'),
     path('student/notices/', views.student_notice_board, name='student_notice_board'),
+    # Batch management APIs (HM-UC-NEW-017)
+    path('get_batches/', views.get_batches, name='get_batches'),
+    path('batch-assign/', views.batch_assign, name='batch_assign'),
+    path('workflow/dashboard/', views.hostel_workflow_dashboard, name='hostel_workflow_dashboard'),
+    path('workflow/<str:hall_id>/eligible-students/', views.hostel_workflow_eligible_students, name='hostel_workflow_eligible_students'),
+    path('workflow/<str:hall_id>/bulk-allot/', views.hostel_workflow_bulk_allot, name='hostel_workflow_bulk_allot'),
+    # Staffing management APIs (UC-021, UC-022)
+    path('get_caretakers/', views.get_caretakers, name='get_caretakers'),
+    path('assign_caretakers/', views.assign_caretakers, name='assign_caretakers'),
+    path('get_wardens/', views.get_wardens, name='get_wardens'),
+    path('assign_warden/', views.assign_warden, name='assign_warden'),
     # Leave management APIs (new)
     path('leave/apply/', views.submitLeaveRequestController, name='submit_leave_request'),
     path('leave/my-requests/', views.getStudentLeavesController, name='get_student_leave_requests'),
@@ -54,6 +65,28 @@ urlpatterns = [
     path('students/<str:student_id>/', views.getStudentController, name='get_student_controller'),
     path('rooms/assign/', views.assignRoomController, name='assign_room_controller'),
     path('rooms/my-room/', views.getStudentRoomController, name='get_student_room_controller'),
+    # ERP modular aliases
+    path('student/group/', views.createStudentGroupController, name='student_group_controller'),
+    path('student/room-details/', views.getStudentRoomController, name='student_room_details_controller'),
+    path('admin/bulk-allot/', views.adminBulkAllotRoomsController, name='admin_bulk_allot_controller'),
+    # Room change request APIs (UC-013, UC-014, UC-015)
+    path('room-change/requests/submit/', views.submitRoomChangeRequestController, name='submit_room_change_request'),
+    path('room-change/requests/my/', views.myRoomChangeRequestsController, name='my_room_change_requests'),
+    path('room-change/requests/review/', views.roomChangeRequestsForReviewController, name='room_change_requests_review'),
+    path('room-change/requests/<int:request_id>/caretaker-decision/', views.caretakerRoomChangeDecisionController, name='caretaker_room_change_decision'),
+    path('room-change/requests/<int:request_id>/warden-decision/', views.wardenRoomChangeDecisionController, name='warden_room_change_decision'),
+    path('room-change/requests/<int:request_id>/allocate/', views.allocateRoomChangeRequestController, name='allocate_room_change_request'),
+    path('room-change/approve/', views.approveRoomChangeRequestController, name='approve_room_change_request'),
+    path('room-change/reject/', views.rejectRoomChangeRequestController, name='reject_room_change_request'),
+    # Inventory management APIs (UC-026, UC-027, UC-028)
+    path('inventory/dashboard/', views.inventoryDashboardController, name='inventory_dashboard'),
+    path('inventory/inspections/submit/', views.submitInventoryInspectionController, name='inventory_inspection_submit'),
+    path('inventory/inspections/', views.inventoryInspectionsController, name='inventory_inspections'),
+    path('inventory/resource-requests/submit/', views.submitResourceRequirementRequestController, name='inventory_resource_request_submit'),
+    path('inventory/resource-requests/', views.resourceRequirementRequestsController, name='inventory_resource_requests'),
+    path('inventory/resource-requests/<int:request_id>/review/', views.reviewResourceRequirementRequestController, name='inventory_resource_request_review'),
+    path('inventory/items/<int:inventory_id>/update/', views.updateInventoryRecordController, name='inventory_item_update'),
+    path('inventory/update-logs/', views.inventoryUpdateLogsController, name='inventory_update_logs'),
     # Student allotment compatibility aliases for current frontend
     path('students_get_students_info/', views.searchStudentsController, name='students_get_students_info_alias'),
     path('caretaker_get_students_info/', views.searchStudentsController, name='caretaker_get_students_info_alias'),
@@ -117,7 +150,10 @@ urlpatterns = [
     path('assign-caretaker', views.AssignCaretakerView.as_view(), name='AssignCaretakerView'),
     path('assign-warden',views.AssignWardenView.as_view(), name='AssignWardenView'),
     path('add-hostel', views.AddHostelView.as_view(), name='add_hostel'),
+    path('add-hostel/', views.AddHostelView.as_view(), name='add_hostel_slash'),
     path('admin-hostel-list', views.AdminHostelListView.as_view(), name='admin_hostel_list'),  # URL for displaying the list of hostels
+    path('admin-hostel-list/', views.AdminHostelListView.as_view(), name='admin_hostel_list_slash'),
+    path('hostel-status/manage/', views.ManageHostelStatusView.as_view(), name='manage_hostel_status'),
     path('delete-hostel/<str:hall_id>/', views.DeleteHostelView.as_view(), name='delete_hostel'),
   
     path('check-hall-exists/', views.CheckHallExistsView.as_view(), name='check_hall_exists'),
@@ -145,6 +181,19 @@ urlpatterns = [
     path('book_guest_room/', views.request_guest_room, name="book_guest_room"),
     path('update_guest_room/', views.update_guest_room, name="update_guest_room"),
     path('available_guest_rooms/', views.available_guestrooms_api, name='available_guestrooms_api'),
+    # Guest room booking lifecycle APIs (UC-036, UC-037)
+    path('guest-room/availability/', views.checkGuestRoomAvailabilityController, name='guest_room_availability'),
+    path('guest-room/bookings/request/', views.submitGuestRoomBookingController, name='guest_room_booking_request'),
+    path('guest-room/bookings/my/', views.myGuestRoomBookingsController, name='guest_room_booking_my'),
+    path('guest-room/bookings/<int:booking_id>/', views.guestRoomBookingDetailController, name='guest_room_booking_detail'),
+    path('guest-room/bookings/<int:booking_id>/modify/', views.modifyGuestRoomBookingController, name='guest_room_booking_modify'),
+    path('guest-room/bookings/<int:booking_id>/cancel/', views.cancelGuestRoomBookingController, name='guest_room_booking_cancel'),
+    path('guest-room/caretaker/pending/', views.caretakerPendingGuestBookingsController, name='guest_room_caretaker_pending'),
+    path('guest-room/caretaker/<int:booking_id>/decision/', views.caretakerDecideGuestBookingController, name='guest_room_caretaker_decision'),
+    path('guest-room/caretaker/<int:booking_id>/check-in/', views.caretakerCheckInGuestBookingController, name='guest_room_caretaker_checkin'),
+    path('guest-room/caretaker/<int:booking_id>/check-out/', views.caretakerCheckOutGuestBookingController, name='guest_room_caretaker_checkout'),
+    path('guest-room/caretaker/settings/', views.guestRoomPolicyController, name='guest_room_caretaker_settings'),
+    path('guest-room/caretaker/report/', views.guestRoomBookingReportController, name='guest_room_caretaker_report'),
 
 
     # !!todo: Add Fine Functionality

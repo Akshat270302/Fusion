@@ -1,60 +1,254 @@
 {% block book_guest_room_status %}
-    {% for user_request in user_guest_room_requests %} 
-    <div class="ui secondary segment">
-        <div class="ui segment">
-            <div class="ui container">
-              <h2 class="ui center aligned header">Room for {{user_request.total_guest}} in {{user_request.hall.hall_id}}</h2>
-              <div class="ui grid">
-                <div class="16 wide column">
-                  <div class="textLoader" style="max-height: 64vh; overflow-y: auto; overflow-x: auto;">
-                  <table class="ui celled table">
-                    <thead>
-                      <tr>
-                        <th>Requested For</th>
-                        <th>Contact</th>
-                        <th>Arrival</th>
-                        <th>Departure</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>{{user_request.guest_name}}</td>
-                        <td>{{user_request.guest_phone}}</td>
-                        <td>{{user_request.arrival_date}}</td>
-                        <td>{{user_request.departure_date}}</td>
-                        {% if user_request.status == 'Accepted' %}
-                        <td class="positive">{{user_request.status}}</td>
-                        {% elif user_request.status == 'Rejected' %}
-                        <td class="negative">{{user_request.status}}</td>
-                        {% else %}
-                        <td>{{user_request.status}}</td>
-                        {% endif %}
-                        <!-- <td>{{user_request.status}}</td> -->
-                      </tr>
-                      <tr>
-                        <td colspan="6">
-                          <div class="ui styled accordion" style="width : 650px">
-                            <div class="title">
-                              <i class="dropdown icon"></i>
-                              Reason
-                            </div>
-                            <div class="content">
-                              <h3 style="color:grey;">Description</h3>
-                              <h4 class="transition hidden" style="color:black;">{{user_request.purpose}}</h4>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  </div>
-                </div>
-              </div>
-            </div>
-           
-            <br>
+<div class="ui segment">
+  <h3 class="ui header">My Guest Room Bookings</h3>
+  <p>Track status, view decisions, modify pending requests, or cancel before check-in date.</p>
+
+  <div class="ui clearing segment">
+    <button id="refresh-my-bookings" class="ui right floated button">Refresh</button>
+  </div>
+
+  <div id="my-booking-feedback" class="ui hidden message"></div>
+  <div id="my-booking-list" class="ui divided items"></div>
+</div>
+
+<script>
+(function() {
+  const list = document.getElementById('my-booking-list');
+  const feedback = document.getElementById('my-booking-feedback');
+  const refreshBtn = document.getElementById('refresh-my-bookings');
+
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  }
+
+  function showFeedback(type, text) {
+    feedback.className = `ui ${type} message`;
+    feedback.textContent = text;
+  }
+
+  function badgeClass(status) {
+    const s = String(status || '').toLowerCase();
+    if (s.includes('approved') || s.includes('confirmed') || s.includes('checkedin') || s.includes('completed')) return 'green';
+    if (s.includes('rejected') || s.includes('canceled')) return 'red';
+    if (s.includes('pending')) return 'yellow';
+    return 'grey';
+  }
+
+  function canModify(status) {
+    return String(status || '').toLowerCase() === 'pending';
+  }
+
+  function canCancel(status, arrivalDate) {
+    const allowed = ['pending', 'approved', 'confirmed'];
+    const s = String(status || '').toLowerCase();
+    if (!allowed.includes(s)) return false;
+    if (!arrivalDate) return false;
+    const today = new Date();
+    const arr = new Date(arrivalDate + 'T00:00:00');
+    return arr > new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  }
+
+  function renderBookingItem(booking) {
+    const status = booking.status || '';
+    const showModify = canModify(status);
+    const showCancel = canCancel(status, booking.arrival_date);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'item';
+    wrapper.innerHTML = `
+      <div class="content">
+        <div class="header">Request #${booking.id} - ${booking.guest_name}</div>
+        <div class="meta">
+          <span class="ui ${badgeClass(status)} tiny label">${status}</span>
+          <span>${booking.hall_name || ''}</span>
         </div>
-    </div>
-    {% endfor %}
+        <div class="description">
+          <p>
+            Dates: ${booking.arrival_date || '-'} to ${booking.departure_date || '-'}<br>
+            Room Type: ${booking.room_type || '-'} | Guests: ${booking.total_guest || '-'} | Rooms: ${booking.rooms_required || '-'}<br>
+            Purpose: ${booking.purpose || '-'}
+          </p>
+          ${booking.rejection_reason ? `<p><strong>Rejection Reason:</strong> ${booking.rejection_reason}</p>` : ''}
+          ${booking.decision_comment ? `<p><strong>Decision Comment:</strong> ${booking.decision_comment}</p>` : ''}
+        </div>
+        <div class="extra">
+          <button class="ui mini button" data-action="detail" data-id="${booking.id}">View Detail</button>
+          ${showModify ? `<button class="ui mini primary button" data-action="modify" data-id="${booking.id}">Modify Request</button>` : ''}
+          ${showCancel ? `<button class="ui mini negative button" data-action="cancel" data-id="${booking.id}">Cancel Booking</button>` : ''}
+        </div>
+      </div>
+    `;
+    return wrapper;
+  }
+
+  async function loadBookings() {
+    list.innerHTML = '<div class="ui active inline loader"></div>';
+    try {
+      const res = await fetch('/hostelmanagement/guest-room/bookings/my/', {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      const payload = await res.json();
+
+      if (!res.ok) {
+        list.innerHTML = '';
+        showFeedback('negative', payload.error || 'Could not fetch booking history.');
+        return;
+      }
+
+      feedback.className = 'ui hidden message';
+      feedback.textContent = '';
+
+      if (!payload.length) {
+        list.innerHTML = '<div class="ui message">No guest room bookings found.</div>';
+        return;
+      }
+
+      list.innerHTML = '';
+      payload.forEach(booking => list.appendChild(renderBookingItem(booking)));
+    } catch (err) {
+      list.innerHTML = '';
+      showFeedback('negative', 'Network error while fetching booking history.');
+    }
+  }
+
+  async function fetchDetail(bookingId) {
+    try {
+      const res = await fetch(`/hostelmanagement/guest-room/bookings/${bookingId}/`, {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        showFeedback('negative', payload.error || 'Unable to load booking detail.');
+        return;
+      }
+
+      alert(
+        `Request #${payload.id}\n` +
+        `Status: ${payload.status}\n` +
+        `Hall: ${payload.hall_name} (${payload.hall_id})\n` +
+        `Room Assigned: ${payload.guest_room_id || 'Not assigned'}\n` +
+        `Check-in: ${payload.checked_in_at || '-'}\n` +
+        `Check-out: ${payload.checked_out_at || '-'}\n` +
+        `Total Charge: ${payload.total_charge || 0}`
+      );
+    } catch (err) {
+      showFeedback('negative', 'Network error while loading booking detail.');
+    }
+  }
+
+  async function modifyBooking(bookingId) {
+    const res = await fetch(`/hostelmanagement/guest-room/bookings/${bookingId}/`, {
+      method: 'GET',
+      credentials: 'same-origin',
+    });
+    const existing = await res.json();
+    if (!res.ok) {
+      showFeedback('negative', existing.error || 'Could not fetch booking details for modification.');
+      return;
+    }
+
+    const guest_name = prompt('Guest name', existing.guest_name || '');
+    if (guest_name === null) return;
+    const guest_phone = prompt('Guest phone (10 digits)', existing.guest_phone || '');
+    if (guest_phone === null) return;
+    const purpose = prompt('Purpose', existing.purpose || '');
+    if (purpose === null) return;
+
+    const body = {
+      guest_name: guest_name,
+      guest_phone: guest_phone,
+      guest_email: existing.guest_email || '',
+      guest_address: existing.guest_address || '',
+      rooms_required: existing.rooms_required || 1,
+      total_guest: existing.total_guest || 1,
+      purpose: purpose,
+      arrival_date: existing.arrival_date,
+      arrival_time: existing.arrival_time || '10:00',
+      departure_date: existing.departure_date,
+      departure_time: existing.departure_time || '10:00',
+      nationality: existing.nationality || '',
+      room_type: existing.room_type || 'single',
+    };
+
+    try {
+      const updateRes = await fetch(`/hostelmanagement/guest-room/bookings/${bookingId}/modify/`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify(body),
+      });
+      const payload = await updateRes.json();
+      if (!updateRes.ok) {
+        showFeedback('negative', payload.error || 'Failed to modify booking request.');
+        return;
+      }
+
+      showFeedback('positive', 'Booking request modified and resubmitted as pending.');
+      loadBookings();
+    } catch (err) {
+      showFeedback('negative', 'Network error while modifying request.');
+    }
+  }
+
+  async function cancelBooking(bookingId) {
+    const cancelReason = prompt('Please enter cancellation reason', 'Cancelled by student');
+    if (cancelReason === null) return;
+
+    try {
+      const res = await fetch(`/hostelmanagement/guest-room/bookings/${bookingId}/cancel/`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify({ cancel_reason: cancelReason }),
+      });
+      const payload = await res.json();
+
+      if (!res.ok) {
+        showFeedback('negative', payload.error || 'Failed to cancel booking.');
+        return;
+      }
+
+      showFeedback('positive', 'Booking cancelled successfully.');
+      loadBookings();
+    } catch (err) {
+      showFeedback('negative', 'Network error while cancelling booking.');
+    }
+  }
+
+  list.addEventListener('click', function(event) {
+    const btn = event.target.closest('button[data-action]');
+    if (!btn) return;
+
+    const action = btn.getAttribute('data-action');
+    const bookingId = btn.getAttribute('data-id');
+    if (!bookingId) return;
+
+    if (action === 'detail') {
+      fetchDetail(bookingId);
+      return;
+    }
+    if (action === 'modify') {
+      modifyBooking(bookingId);
+      return;
+    }
+    if (action === 'cancel') {
+      cancelBooking(bookingId);
+    }
+  });
+
+  refreshBtn.addEventListener('click', loadBookings);
+  loadBookings();
+})();
+</script>
 {% endblock %}

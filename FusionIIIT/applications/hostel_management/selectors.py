@@ -22,13 +22,22 @@ from .models import (
     HallRoom,
     WorkerReport,
     HostelInventory,
+    HostelInventoryInspection,
+    HostelInventoryInspectionItem,
+    HostelResourceRequest,
+    HostelResourceRequestItem,
+    HostelInventoryUpdateLog,
     HostelLeave,
     HostelComplaint,
     HostelAllotment,
     StudentDetails,
     GuestRoom,
+    GuestRoomPolicy,
     HostelFine,
     StudentRoomAllocation,
+    HostelRoomGroup,
+    HostelRoomGroupMember,
+    RoomChangeRequest,
     RoomAllocationStatus,
     HostelTransactionHistory,
     HostelHistory,
@@ -152,6 +161,63 @@ def get_bookings_by_user(user: User):
     return GuestRoomBooking.objects.filter(intender=user).select_related('hall').order_by('-arrival_date')
 
 
+def get_booking_by_id_and_user(*, booking_id: int, user: User):
+    """Retrieve a booking by ID scoped to requesting user."""
+    return GuestRoomBooking.objects.select_related('hall', 'intender').get(id=booking_id, intender=user)
+
+
+def get_bookings_by_hall(*, hall, statuses=None):
+    """Get bookings for a hall, optionally filtered by status set."""
+    qs = GuestRoomBooking.objects.filter(hall=hall).select_related('hall', 'intender')
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    return qs.order_by('-booking_date', '-id')
+
+
+def get_bookings_by_hall_and_date_range(*, hall, start_date, end_date):
+    """Get hall bookings intersecting the provided date range."""
+    return GuestRoomBooking.objects.filter(
+        hall=hall,
+        arrival_date__lte=end_date,
+        departure_date__gte=start_date,
+    ).select_related('hall', 'intender').order_by('-arrival_date', '-id')
+
+
+def get_student_active_bookings(*, user: User, hall):
+    """Get active bookings for student in a hall."""
+    return GuestRoomBooking.objects.filter(
+        intender=user,
+        hall=hall,
+        status__in=[
+            BookingStatus.PENDING,
+            BookingStatus.APPROVED,
+            BookingStatus.CONFIRMED,
+            BookingStatus.CHECKED_IN,
+            BookingStatus.CANCEL_REQUESTED,
+        ],
+    )
+
+
+def get_overlapping_bookings_for_room(*, hall, guest_room_id: str, start_date, end_date):
+    """Get active bookings overlapping the requested period for a guest room."""
+    return GuestRoomBooking.objects.filter(
+        hall=hall,
+        guest_room_id=str(guest_room_id),
+        status__in=[
+            BookingStatus.APPROVED,
+            BookingStatus.CONFIRMED,
+            BookingStatus.CHECKED_IN,
+        ],
+        arrival_date__lt=end_date,
+        departure_date__gt=start_date,
+    )
+
+
+def get_pending_fines_for_student_in_hall(*, student, hall):
+    """Get pending fines for student in a hall."""
+    return HostelFine.objects.filter(student=student, hall=hall, status=FineStatus.PENDING)
+
+
 # ══════════════════════════════════════════════════════════════
 # GUEST ROOM SELECTORS
 # ══════════════════════════════════════════════════════════════
@@ -166,14 +232,34 @@ def get_guest_room_by_id(room_id: int):
     return GuestRoom.objects.select_related('hall').get(id=room_id)
 
 
+def get_guest_room_by_hall_and_room_label(*, hall, room_label: str):
+    """Get guest room by hall and room label/code."""
+    return GuestRoom.objects.filter(hall=hall, room__iexact=(room_label or '').strip()).select_related('hall').first()
+
+
 def get_vacant_guest_rooms_by_hall(hall):
     """Get all vacant guest rooms for a specific hall."""
     return GuestRoom.objects.filter(hall=hall, vacant=True).select_related('hall')
 
 
+def get_guest_rooms_by_hall_and_type(*, hall, room_type: str):
+    """Get guest rooms for hall filtered by room type."""
+    return GuestRoom.objects.filter(hall=hall, room_type=room_type).select_related('hall')
+
+
 def count_vacant_rooms_by_hall_and_type(hall_id: int, room_type: str) -> int:
     """Count vacant rooms of a specific type in a hall."""
     return GuestRoom.objects.filter(hall_id=hall_id, room_type=room_type, vacant=True).count()
+
+
+def get_guest_room_policy_by_hall(*, hall):
+    """Get guest room policy for hall, if configured."""
+    return GuestRoomPolicy.objects.filter(hall=hall).first()
+
+
+def get_or_create_guest_room_policy_by_hall(*, hall):
+    """Get or create guest room policy for hall."""
+    return GuestRoomPolicy.objects.get_or_create(hall=hall)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -346,6 +432,57 @@ def get_inventory_by_id(inventory_id: int):
 def get_inventory_by_hall(hall_id: int):
     """Get all inventory items for a specific hall."""
     return HostelInventory.objects.filter(hall_id=hall_id).order_by('inventory_id')
+
+
+def get_inventory_by_hall_instance(*, hall):
+    """Get inventory items for hall object."""
+    return HostelInventory.objects.filter(hall=hall).order_by('inventory_id')
+
+
+def get_resource_requests_by_hall(*, hall):
+    """Get resource requests for a hall."""
+    return HostelResourceRequest.objects.filter(hall=hall).select_related(
+        'hall',
+        'caretaker__id__user',
+        'reviewed_by_warden__id__user',
+        'reviewed_by_admin',
+    ).prefetch_related('items').order_by('-created_at')
+
+
+def get_all_resource_requests():
+    """Get all resource requests."""
+    return HostelResourceRequest.objects.all().select_related(
+        'hall',
+        'caretaker__id__user',
+        'reviewed_by_warden__id__user',
+        'reviewed_by_admin',
+    ).prefetch_related('items').order_by('-created_at')
+
+
+def get_resource_request_by_id(request_id: int):
+    """Get resource request by ID."""
+    return HostelResourceRequest.objects.select_related(
+        'hall',
+        'caretaker__id__user',
+        'reviewed_by_warden__id__user',
+        'reviewed_by_admin',
+    ).prefetch_related('items').get(id=request_id)
+
+
+def get_inventory_inspections_by_hall(*, hall):
+    """Get inventory inspections for hall."""
+    return HostelInventoryInspection.objects.filter(hall=hall).select_related(
+        'hall',
+        'caretaker__id__user',
+    ).prefetch_related('items__inventory').order_by('-created_at')
+
+
+def get_inventory_update_logs_by_hall(*, hall):
+    """Get inventory update logs for hall."""
+    return HostelInventoryUpdateLog.objects.filter(hall=hall).select_related(
+        'inventory',
+        'updated_by',
+    ).order_by('-created_at')
 
 
 # ══════════════════════════════════════════════════════════════
@@ -620,6 +757,36 @@ def get_students_in_hall(*, hall):
     ).select_related('id__user').order_by('id__user__username')
 
 
+def get_students_by_usernames(*, usernames):
+    """Fetch student rows by usernames with related user records."""
+    return Student.objects.filter(
+        id__user__username__in=usernames
+    ).select_related('id__user')
+
+
+def get_group_membership_for_student(*, student):
+    """Get hostel group membership for student, if any."""
+    return HostelRoomGroupMember.objects.filter(student=student).select_related('group').first()
+
+
+def get_group_by_signature(*, hall, member_signature: str):
+    """Resolve existing hostel group by deterministic member signature."""
+    return HostelRoomGroup.objects.filter(hall=hall, member_signature=member_signature).first()
+
+
+def get_groups_for_hall(*, hall):
+    """Get all groups for a hostel hall with memberships."""
+    return HostelRoomGroup.objects.filter(hall=hall).prefetch_related('memberships__student__id__user').order_by('id')
+
+
+def get_group_memberships_for_students(*, hall, students):
+    """Get group memberships for provided students within hall."""
+    return HostelRoomGroupMember.objects.filter(
+        student__in=students,
+        group__hall=hall,
+    ).select_related('group', 'student__id__user')
+
+
 def get_student_room_allocation_active(*, student):
     """Get active room allocation for student."""
     return StudentRoomAllocation.objects.filter(
@@ -635,6 +802,46 @@ def get_room_by_hall_and_details(*, hall, block_no: str, room_no: str):
         block_no=block_no,
         room_no=str(room_no),
     ).first()
+
+
+def get_pending_room_change_by_student(*, student):
+    """Get latest pending room change request for student, if any."""
+    return RoomChangeRequest.objects.filter(
+        student=student,
+        status='Pending',
+    ).order_by('-created_at').first()
+
+
+def get_room_change_requests_by_student(*, student):
+    """Get room change request history for student."""
+    return RoomChangeRequest.objects.filter(student=student).select_related(
+        'hall',
+        'allocated_room',
+    ).order_by('-created_at')
+
+
+def get_room_change_request_by_id(*, request_id: int):
+    """Get room change request by numeric ID."""
+    return RoomChangeRequest.objects.select_related(
+        'hall',
+        'student__id__user',
+        'caretaker_decided_by__id__user',
+        'warden_decided_by__id__user',
+        'allocated_room',
+    ).get(id=request_id)
+
+
+def get_room_change_requests_by_hall_and_status(*, hall, statuses=None):
+    """Get room change requests for a hall, optionally filtered by statuses."""
+    qs = RoomChangeRequest.objects.filter(hall=hall).select_related(
+        'student__id__user',
+        'allocated_room',
+        'caretaker_decided_by__id__user',
+        'warden_decided_by__id__user',
+    )
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    return qs.order_by('-created_at', '-id')
 
 
 # ══════════════════════════════════════════════════════════════
@@ -680,6 +887,11 @@ def get_staff_by_username(username: str):
     return Staff.objects.select_related('id__user').get(id__user__username=username)
 
 
+def get_staff_by_extrainfo_id(extrainfo_id):
+    """Get staff member by linked ExtraInfo primary key."""
+    return Staff.objects.select_related('id__user').filter(id=extrainfo_id).first()
+
+
 def get_all_faculty():
     """Retrieve all faculty members."""
     return Faculty.objects.all().select_related('id__user')
@@ -693,6 +905,11 @@ def get_faculty_by_id(faculty_id):
 def get_faculty_by_username(username: str):
     """Get faculty member by username."""
     return Faculty.objects.select_related('id__user').get(id__user__username=username)
+
+
+def get_faculty_by_extrainfo_id(extrainfo_id):
+    """Get faculty member by linked ExtraInfo primary key."""
+    return Faculty.objects.select_related('id__user').filter(id=extrainfo_id).first()
 
 
 # ══════════════════════════════════════════════════════════════
