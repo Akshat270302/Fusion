@@ -1,17 +1,31 @@
-# Byte-compiled / optimized / DLL files
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 
-# IDEs #
-.vscode
-.idea
+# Virtual environments
+venv/
+env/
+*env/
+
+# Environment variables
+.env
+.env.*
+
+# Database
+db.sqlite3
+
+# Media & static
+media/
+staticfiles/
+
+# IDEs
+.vscode/
+.idea/
 
 # Distribution / packaging
 .Python
-env/
 build/
-media
 develop-eggs/
 downloads/
 eggs/
@@ -32,7 +46,7 @@ var/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# Unit test / coverage
 htmlcov/
 .tox/
 .coverage
@@ -43,7 +57,7 @@ coverage.xml
 *,cover
 .hypothesis/
 
-# Flask stuff:
+# Flask (not needed but fine)
 instance/.webassets-cache
 
 # PyBuilder
@@ -52,23 +66,15 @@ target/
 # pyenv
 .python-version
 
-# celery beat schedule file
+# celery
 celerybeat-schedule
 
-# dotenv
-.env
-
-# virtualenv: ignore environment folder ending with env. e.g. env, venv, myenv, fusionenv, etc
-*env/
-
-# Rope project settings
+# Rope
 .ropeproject
 
-# VSCode Settings
-#.vscode/settings.json
-
-# Node Modules
+# Node
 node_modules/
-
-FusionIIIT/static/
 package-lock.json
+
+# Project specific
+FusionIIIT/static/

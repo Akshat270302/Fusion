@@ -1,0 +1,861 @@
+Test_ID,Scenario,Outcome,Error Details,Status,Severity
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_business_rules.py"", line 30, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applicati",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\case.py"", line 60, in testPartExecutor
+    yield
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\case.py"", line 676, in run
+    self._callTestMethod(testMethod)
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\case.py"", line 633, in _callTestMethod
+    method()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\exception.py"", line 47, in inner
+    response = get_response(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 167, in _get_response
+    callback, callback_args, callback_kwargs = self.resolve_request(request)
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\core\handlers\base.py"", line 290, in resolve_request
+  ",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\suite.py"", line 163, in _handleClassSetUp
+    setUpClass()
+  File ""D:\Fusion\Fusion\FusionIIIT\venv\lib\site-packages\django\test\testcases.py"", line 1123, in setUpClass
+    cls.setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\hostel_management\tests\test_use_cases.py"", line 32, in setUpTestData
+    super().setUpTestData()
+  File ""D:\Fusion\Fusion\FusionIIIT\applications\h",Open,High
+,,Error,"Traceback (most recent call last):
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\case.py"", line 60, in testPartExecutor
+    yield
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\case.py"", line 676, in run
+    self._callTestMethod(testMethod)
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\case.py"", line 633, in _callTestMethod
+    method()
+  File ""C:\Users\DELL\AppData\Local\Programs\Python\Python38\lib\unittest\load",Open,High
