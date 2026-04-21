@@ -112,6 +112,11 @@ urlpatterns = [
     path('inventory/resource-requests/<int:request_id>/review/', views.reviewResourceRequirementRequestController, name='inventory_resource_request_review'),
     path('inventory/items/<int:inventory_id>/update/', views.updateInventoryRecordController, name='inventory_item_update'),
     path('inventory/update-logs/', views.inventoryUpdateLogsController, name='inventory_update_logs'),
+    # Guard duty management APIs (UC-024, UC-025)
+    path('guard-duties/schedules/', views.guardDutySchedulesController, name='guard_duty_schedules'),
+    path('guard-duties/schedules/<int:schedule_id>/', views.guardDutyScheduleDetailController, name='guard_duty_schedule_detail'),
+    path('guard-duties/concerns/', views.guardDutyConcernsController, name='guard_duty_concerns'),
+    path('guard-duties/concerns/<int:concern_id>/resolve/', views.resolveGuardDutyConcernController, name='resolve_guard_duty_concern'),
     # Student allotment compatibility aliases for current frontend
     path('students_get_students_info/', views.searchStudentsController, name='students_get_students_info_alias'),
     path('caretaker_get_students_info/', views.searchStudentsController, name='caretaker_get_students_info_alias'),

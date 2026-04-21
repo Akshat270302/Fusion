@@ -315,6 +315,18 @@ def resolve_hostel_rbac_role_service(*, user):
     return mapping.role, mapping
 
 
+def _get_required_hall_for_super_admin(*, hall_id: str):
+    """Resolve hall by hall_id for super-admin scoped dashboards/actions."""
+    normalized_hall_id = (hall_id or '').strip()
+    if not normalized_hall_id:
+        raise InvalidOperationError('hall_id is required for super admin requests.')
+
+    hall = selectors.get_hall_by_hall_id_or_none(normalized_hall_id)
+    if not hall:
+        raise InvalidOperationError('Invalid hall_id provided.')
+    return hall
+
+
 # ══════════════════════════════════════════════════════════════
 # HALL SERVICES
 # ══════════════════════════════════════════════════════════════
@@ -1332,14 +1344,18 @@ def create_or_update_staff_schedule(
 ):
     """Create or update a staff schedule."""
     existing_schedule = selectors.get_schedule_by_staff_id(staff_id)
+    parsed_start = datetime.strptime(start_time, '%H:%M').time()
+    parsed_end = datetime.strptime(end_time, '%H:%M').time()
+    shift_label = _infer_shift_label(day=day, start_time=parsed_start, end_time=parsed_end)
 
     if existing_schedule:
         existing_schedule.hall = hall
         existing_schedule.day = day
-        existing_schedule.start_time = datetime.strptime(start_time, '%H:%M').time()
-        existing_schedule.end_time = datetime.strptime(end_time, '%H:%M').time()
+        existing_schedule.start_time = parsed_start
+        existing_schedule.end_time = parsed_end
         existing_schedule.staff_type = staff_type
-        existing_schedule.save(update_fields=['hall', 'day', 'start_time', 'end_time', 'staff_type'])
+        existing_schedule.shift_label = shift_label
+        existing_schedule.save(update_fields=['hall', 'day', 'start_time', 'end_time', 'staff_type', 'shift_label'])
         return existing_schedule
     else:
         schedule = StaffSchedule.objects.create(
@@ -1347,8 +1363,9 @@ def create_or_update_staff_schedule(
             staff_id=staff_id,
             day=day,
             staff_type=staff_type,
-            start_time=datetime.strptime(start_time, '%H:%M').time(),
-            end_time=datetime.strptime(end_time, '%H:%M').time()
+            shift_label=shift_label,
+            start_time=parsed_start,
+            end_time=parsed_end,
         )
         return schedule
 
@@ -1359,6 +1376,404 @@ def delete_staff_schedule(*, staff_id):
     schedule = selectors.get_schedule_by_staff_id(staff_id)
     if schedule:
         schedule.delete()
+
+
+GUARD_DUTY_CONCERN_PREFIX = '[Guard Duty]'
+GUARD_DUTY_ALLOWED_DAYS = {
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+}
+
+
+def _normalize_guard_day(day: str) -> str:
+    normalized = str(day or '').strip().capitalize()
+    if normalized not in GUARD_DUTY_ALLOWED_DAYS:
+        raise InvalidOperationError('Invalid day provided for guard duty schedule.')
+    return normalized
+
+
+def _parse_guard_time(value, field_name: str):
+    if isinstance(value, datetime):
+        return value.time()
+    if hasattr(value, 'hour') and hasattr(value, 'minute'):
+        return value
+    try:
+        return datetime.strptime(str(value), '%H:%M').time()
+    except Exception:
+        raise InvalidOperationError(f'Invalid {field_name}. Use HH:MM format.')
+
+
+def _infer_shift_label(*, day: str, start_time, end_time):
+    start_hour = int(getattr(start_time, 'hour', 0))
+    end_hour = int(getattr(end_time, 'hour', 0))
+
+    if 5 <= start_hour < 12:
+        base = 'Morning'
+    elif 12 <= start_hour < 18:
+        base = 'Evening'
+    else:
+        base = 'Night'
+
+    if end_hour <= start_hour:
+        base = 'Night'
+
+    return f'{base} Shift ({day})'
+
+
+def _serialize_guard_schedule(schedule):
+    return {
+        'id': schedule.id,
+        'hall_id': schedule.hall.hall_id,
+        'hall_name': schedule.hall.hall_name,
+        'staff_id': schedule.staff_id.id.id,
+        'staff_username': schedule.staff_id.id.user.username,
+        'staff_name': schedule.staff_id.id.user.username,
+        'staff_type': schedule.staff_type,
+        'day': schedule.day,
+        'start_time': schedule.start_time.strftime('%H:%M') if schedule.start_time else None,
+        'end_time': schedule.end_time.strftime('%H:%M') if schedule.end_time else None,
+    }
+
+
+def _serialize_guard_concern(complaint):
+    return {
+        'id': complaint.id,
+        'hall_id': complaint.hall.hall_id if complaint.hall else None,
+        'hall_name': complaint.hall.hall_name if complaint.hall else None,
+        'subject': complaint.title.replace(f'{GUARD_DUTY_CONCERN_PREFIX} ', '', 1),
+        'message': complaint.description,
+        'status': complaint.status,
+        'raised_by': complaint.escalated_by.username if complaint.escalated_by else None,
+        'raised_at': complaint.escalated_at or complaint.created_at,
+        'response_notes': complaint.resolution_notes,
+        'resolved_by': complaint.resolved_by.username if complaint.resolved_by else None,
+        'resolved_at': complaint.resolved_at,
+        'created_at': complaint.created_at,
+    }
+
+
+def _get_guard_staff_pool():
+    guard_user_ids = list(
+        HoldsDesignation.objects.filter(
+            designation__name__iregex=r'guard|security'
+        ).values_list('working_id', flat=True)
+    )
+
+    staff_qs = Staff.objects.select_related('id__user').all()
+    if guard_user_ids:
+        scoped = staff_qs.filter(id__user__id__in=guard_user_ids)
+        if scoped.exists():
+            staff_qs = scoped
+
+    return [
+        {
+            'staff_id': staff.id.id,
+            'username': staff.id.user.username,
+            'name': f'{staff.id.user.first_name} {staff.id.user.last_name}'.strip() or staff.id.user.username,
+        }
+        for staff in staff_qs.order_by('id__user__username')
+    ]
+
+
+def _assert_guard_schedule_overlap_conflicts(*, staff, day: str, start_time, end_time, exclude_schedule_id=None, override_policy=False):
+    conflicts = StaffSchedule.objects.filter(
+        staff_id=staff,
+        day=day,
+        staff_type__iexact='guard',
+    )
+    if exclude_schedule_id is not None:
+        conflicts = conflicts.exclude(id=exclude_schedule_id)
+
+    overlap_exists = False
+    for existing in conflicts:
+        if not existing.start_time or not existing.end_time:
+            continue
+        if start_time < existing.end_time and end_time > existing.start_time:
+            overlap_exists = True
+            break
+
+    if overlap_exists and not override_policy:
+        raise InvalidOperationError('Guard has overlapping duty timings. Enable override_policy to proceed.')
+
+    if conflicts.count() >= 2 and not override_policy:
+        raise InvalidOperationError('Guard already has multiple shifts for this day. Enable override_policy to proceed.')
+
+
+def _resolve_guard_hall_context(*, user, hall_id: str = None, for_write: bool = False):
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        return role, hall
+
+    if for_write:
+        raise UnauthorizedAccessError('Only super admin can assign or modify guard duty schedules.')
+
+    if role not in [UserHostelMapping.ROLE_WARDEN, UserHostelMapping.ROLE_CARETAKER]:
+        raise UnauthorizedAccessError('Only super admin, warden, or caretaker can access guard duty data.')
+    if not mapping or not mapping.hall:
+        raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
+
+    return role, mapping.hall
+
+
+def getGuardDutySchedulesService(*, user, hall_id: str = None, day: str = None):
+    """Return guard duty schedules and security overview for a hall."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=False)
+
+    duty_qs = StaffSchedule.objects.filter(
+        hall=hall,
+        staff_type__iexact='guard',
+    ).select_related('hall', 'staff_id__id__user').order_by('day', 'start_time', 'id')
+
+    if day:
+        duty_qs = duty_qs.filter(day=_normalize_guard_day(day))
+
+    schedules = [_serialize_guard_schedule(entry) for entry in duty_qs]
+
+    current_dt = timezone.now()
+    if timezone.is_naive(current_dt):
+        current_local_dt = current_dt
+    else:
+        current_local_dt = timezone.localtime(current_dt)
+
+    weekday = current_local_dt.strftime('%A')
+    now_time = current_local_dt.time()
+    active_shifts = [
+        entry for entry in duty_qs
+        if entry.day == weekday
+        and entry.start_time
+        and entry.end_time
+        and entry.start_time <= now_time < entry.end_time
+    ]
+
+    day_counts = {day_name: 0 for day_name in GUARD_DUTY_ALLOWED_DAYS}
+    for entry in duty_qs:
+        if entry.day in day_counts:
+            day_counts[entry.day] += 1
+
+    uncovered_days = [day_name for day_name, count in day_counts.items() if count == 0]
+
+    return {
+        'hall': {
+            'hall_id': hall.hall_id,
+            'hall_name': hall.hall_name,
+        },
+        'available_guards': _get_guard_staff_pool(),
+        'schedules': schedules,
+        'overview': {
+            'total_guard_shifts': len(schedules),
+            'active_guard_count': len(active_shifts),
+            'active_shifts': [_serialize_guard_schedule(entry) for entry in active_shifts],
+            'uncovered_days': uncovered_days,
+            'coverage_by_day': day_counts,
+            'critical_gap': len(active_shifts) == 0,
+        },
+    }
+
+
+@transaction.atomic
+def createGuardDutyScheduleService(*, user, hall_id: str, staff_id: int, day: str, start_time, end_time, override_policy: bool = False):
+    """Create a guard duty schedule entry. Only super admin is allowed."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=True)
+
+    try:
+        staff = selectors.get_staff_by_id(staff_id)
+    except Staff.DoesNotExist:
+        raise StaffNotFoundError('Guard staff not found.')
+
+    normalized_day = _normalize_guard_day(day)
+    parsed_start = _parse_guard_time(start_time, 'start_time')
+    parsed_end = _parse_guard_time(end_time, 'end_time')
+    if parsed_end <= parsed_start:
+        raise InvalidOperationError('end_time must be after start_time.')
+    shift_label = _infer_shift_label(day=normalized_day, start_time=parsed_start, end_time=parsed_end)
+
+    _assert_guard_schedule_overlap_conflicts(
+        staff=staff,
+        day=normalized_day,
+        start_time=parsed_start,
+        end_time=parsed_end,
+        override_policy=bool(override_policy),
+    )
+
+    schedule = StaffSchedule.objects.create(
+        hall=hall,
+        staff_id=staff,
+        staff_type='Guard',
+        shift_label=shift_label,
+        day=normalized_day,
+        start_time=parsed_start,
+        end_time=parsed_end,
+    )
+
+    return _serialize_guard_schedule(schedule)
+
+
+@transaction.atomic
+def updateGuardDutyScheduleService(
+    *,
+    user,
+    schedule_id: int,
+    hall_id: str,
+    staff_id=None,
+    day: str = None,
+    start_time=None,
+    end_time=None,
+    override_policy: bool = False,
+):
+    """Update an existing guard duty schedule entry. Only super admin is allowed."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=True)
+
+    try:
+        schedule = StaffSchedule.objects.select_related('staff_id__id__user', 'hall').get(id=schedule_id)
+    except StaffSchedule.DoesNotExist:
+        raise InvalidOperationError('Guard duty schedule not found.')
+
+    if schedule.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected hall does not match this schedule entry.')
+
+    new_staff = schedule.staff_id
+    if staff_id is not None:
+        try:
+            new_staff = selectors.get_staff_by_id(staff_id)
+        except Staff.DoesNotExist:
+            raise StaffNotFoundError('Guard staff not found.')
+
+    new_day = _normalize_guard_day(day or schedule.day)
+    new_start = _parse_guard_time(start_time if start_time is not None else schedule.start_time, 'start_time')
+    new_end = _parse_guard_time(end_time if end_time is not None else schedule.end_time, 'end_time')
+
+    if new_end <= new_start:
+        raise InvalidOperationError('end_time must be after start_time.')
+    shift_label = _infer_shift_label(day=new_day, start_time=new_start, end_time=new_end)
+
+    _assert_guard_schedule_overlap_conflicts(
+        staff=new_staff,
+        day=new_day,
+        start_time=new_start,
+        end_time=new_end,
+        exclude_schedule_id=schedule.id,
+        override_policy=bool(override_policy),
+    )
+
+    schedule.staff_id = new_staff
+    schedule.day = new_day
+    schedule.start_time = new_start
+    schedule.end_time = new_end
+    schedule.staff_type = 'Guard'
+    schedule.shift_label = shift_label
+    schedule.save(update_fields=['staff_id', 'day', 'start_time', 'end_time', 'staff_type', 'shift_label'])
+
+    return _serialize_guard_schedule(schedule)
+
+
+@transaction.atomic
+def deleteGuardDutyScheduleService(*, user, schedule_id: int, hall_id: str):
+    """Delete a guard duty schedule entry. Only super admin is allowed."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=True)
+
+    try:
+        schedule = StaffSchedule.objects.get(id=schedule_id)
+    except StaffSchedule.DoesNotExist:
+        raise InvalidOperationError('Guard duty schedule not found.')
+
+    if schedule.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected hall does not match this schedule entry.')
+
+    day_entries = StaffSchedule.objects.filter(
+        hall=hall,
+        day=schedule.day,
+        staff_type__iexact='guard',
+    ).count()
+    if day_entries <= 1:
+        raise InvalidOperationError('Cannot remove the last guard shift for this day. Coverage gap detected.')
+
+    schedule.delete()
+
+
+@transaction.atomic
+def raiseGuardDutyConcernService(*, user, subject: str, message: str):
+    """Allow warden/caretaker to raise guard-duty concerns for super admin."""
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role not in [UserHostelMapping.ROLE_WARDEN, UserHostelMapping.ROLE_CARETAKER]:
+        raise UnauthorizedAccessError('Only warden or caretaker can raise guard duty concerns.')
+    if not mapping or not mapping.hall:
+        raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
+
+    normalized_subject = str(subject or '').strip()
+    normalized_message = str(message or '').strip()
+    if len(normalized_subject) < 3:
+        raise InvalidOperationError('Concern subject must be at least 3 characters long.')
+    if len(normalized_message) < 10:
+        raise InvalidOperationError('Concern message must be at least 10 characters long.')
+
+    concern = HostelComplaint.objects.create(
+        student=None,
+        hall=mapping.hall,
+        title=f'{GUARD_DUTY_CONCERN_PREFIX} {normalized_subject}',
+        description=normalized_message,
+        status=ComplaintStatus.ESCALATED,
+        escalation_reason='Guard duty concern raised for super admin review.',
+        escalated_by=user,
+        escalated_at=timezone.now(),
+    )
+    return _serialize_guard_concern(concern)
+
+
+def listGuardDutyConcernsService(*, user, hall_id: str = None):
+    """List guard-duty concerns for super admin or mapped hall users."""
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    elif role in [UserHostelMapping.ROLE_WARDEN, UserHostelMapping.ROLE_CARETAKER]:
+        if not mapping or not mapping.hall:
+            raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
+        hall = mapping.hall
+    else:
+        raise UnauthorizedAccessError('You are not authorized to view guard duty concerns.')
+
+    concerns = HostelComplaint.objects.filter(
+        hall=hall,
+        title__startswith=GUARD_DUTY_CONCERN_PREFIX,
+    ).select_related('hall', 'escalated_by', 'resolved_by').order_by('-created_at')
+
+    return [_serialize_guard_concern(concern) for concern in concerns]
+
+
+@transaction.atomic
+def resolveGuardDutyConcernService(*, user, concern_id: int, hall_id: str, response_notes: str):
+    """Resolve a guard-duty concern. Only super admin is allowed."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin':
+        raise UnauthorizedAccessError('Only super admin can resolve guard duty concerns.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+
+    try:
+        concern = HostelComplaint.objects.select_related('hall').get(id=concern_id)
+    except HostelComplaint.DoesNotExist:
+        raise InvalidOperationError('Guard duty concern not found.')
+
+    if not concern.title.startswith(GUARD_DUTY_CONCERN_PREFIX):
+        raise InvalidOperationError('Provided concern is not a guard duty concern.')
+    if concern.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected hall does not match this concern.')
+
+    notes = str(response_notes or '').strip()
+    if len(notes) < 5:
+        raise InvalidOperationError('Resolution notes must be at least 5 characters long.')
+
+    concern.status = ComplaintStatus.RESOLVED
+    concern.resolution_notes = notes
+    concern.resolved_by = user
+    concern.resolved_at = timezone.now()
+    concern.save(update_fields=['status', 'resolution_notes', 'resolved_by', 'resolved_at', 'updated_at'])
+    return _serialize_guard_concern(concern)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1412,10 +1827,15 @@ def delete_notice(*, notice_id: int):
     notice.delete()
 
 
-def getAllNoticesService(*, user=None):
+def getAllNoticesService(*, user=None, hall_id: str = None):
     """Return notices scoped to authenticated user's mapped hall."""
-    if user is None or user.is_superuser:
+    if user is None:
         return selectors.get_all_notices()
+
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        return selectors.get_notices_by_hall(hall)
 
     mapping = resolve_user_hall_mapping_service(user=user, strict=True)
     return selectors.get_notices_by_hall(mapping.hall)
@@ -2917,7 +3337,7 @@ def caretakerVerifyRoomVacationService(
     return _serialize_room_vacation_request(request_obj)
 
 
-def getRoomVacationRequestsForFinalizationService(*, user, statuses=None):
+def getRoomVacationRequestsForFinalizationService(*, user, statuses=None, hall_id: str = None):
     """Super admin views vacation requests ready for finalization."""
     role, _ = resolve_hostel_rbac_role_service(user=user)
     if role != 'super_admin':
@@ -2928,15 +3348,19 @@ def getRoomVacationRequestsForFinalizationService(*, user, statuses=None):
         VacationRequestStatusChoices.COMPLETED,
     ]
     requests = selectors.get_room_vacation_requests_by_status(statuses=normalized_statuses)
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    requests = requests.filter(hall_id=hall.id)
     return [_serialize_room_vacation_request(item) for item in requests]
 
 
 @transaction.atomic
-def finalizeRoomVacationService(*, user, request_id: int, confirm: bool):
+def finalizeRoomVacationService(*, user, request_id: int, confirm: bool, hall_id: str = None):
     """Super admin finalizes room vacation by deallocation and archival."""
     role, _ = resolve_hostel_rbac_role_service(user=user)
     if role != 'super_admin':
         raise UnauthorizedAccessError('Only super admin can finalize room vacation.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
 
     if not confirm:
         raise InvalidOperationError('Finalization confirmation is required.')
@@ -2945,6 +3369,9 @@ def finalizeRoomVacationService(*, user, request_id: int, confirm: bool):
         request_obj = selectors.get_room_vacation_request_by_id(request_id=request_id)
     except RoomVacationRequest.DoesNotExist:
         raise RoomVacationRequestNotFoundError('Room vacation request not found.')
+
+    if request_obj.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected request does not belong to the specified hall.')
 
     if request_obj.status != VacationRequestStatusChoices.CLEARANCE_APPROVED:
         raise InvalidOperationError('Only clearance approved requests can be finalized.')
@@ -4110,12 +4537,14 @@ def _serialize_inventory_item(item):
     }
 
 
-def getInventoryDashboardService(*, user):
+def getInventoryDashboardService(*, user, hall_id: str = None):
     """Return inventory list for authenticated hall (caretaker/warden) or all halls (superuser/admin)."""
-    if user.is_superuser:
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
         inventory = [
             item for item in selectors.get_all_inventory()
-            if item.hall and item.hall.operational_status == HostelOperationalStatus.ACTIVE
+            if item.hall and item.hall.id == hall.id and item.hall.operational_status == HostelOperationalStatus.ACTIVE
         ]
         return [_serialize_inventory_item(item) for item in inventory]
 
@@ -4186,16 +4615,13 @@ def submitInventoryInspectionService(*, user, items, remarks: str = ''):
     }
 
 
-def getInventoryInspectionsService(*, user):
+def getInventoryInspectionsService(*, user, hall_id: str = None):
     """Get inspections for current hall (caretaker/warden) or all halls for superuser."""
-    if user.is_superuser:
-        # Aggregate all hall inspections by reading per hall inventory relation
-        payload = []
-        for hall in selectors.get_all_halls():
-            inspections = selectors.get_inventory_inspections_by_hall(hall=hall)
-            for inspection in inspections:
-                payload.append(_serialize_inventory_inspection(inspection))
-        return payload
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        inspections = selectors.get_inventory_inspections_by_hall(hall=hall)
+        return [_serialize_inventory_inspection(inspection) for inspection in inspections]
 
     mapping = _ensure_inventory_role_access(
         user=user,
@@ -4323,10 +4749,12 @@ def _serialize_resource_request(resource_request):
     }
 
 
-def getResourceRequestsService(*, user):
+def getResourceRequestsService(*, user, hall_id: str = None):
     """Caretaker sees own-hall requests; warden sees hall requests; superuser sees all."""
-    if user.is_superuser:
-        return [_serialize_resource_request(req) for req in selectors.get_all_resource_requests()]
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        return [_serialize_resource_request(req) for req in selectors.get_resource_requests_by_hall(hall=hall)]
 
     mapping = _ensure_inventory_role_access(
         user=user,
@@ -4337,7 +4765,7 @@ def getResourceRequestsService(*, user):
 
 
 @transaction.atomic
-def reviewResourceRequestService(*, user, request_id: int, decision: str, remarks: str = ''):
+def reviewResourceRequestService(*, user, request_id: int, decision: str, remarks: str = '', hall_id: str = None):
     """Warden/admin approves or rejects resource request."""
     try:
         resource_request = selectors.get_resource_request_by_id(request_id)
@@ -4350,7 +4778,11 @@ def reviewResourceRequestService(*, user, request_id: int, decision: str, remark
     if normalized_decision == WorkflowStatus.REJECTED and not (remarks or '').strip():
         raise InvalidOperationError('remarks are required when rejecting a request.')
 
-    if user.is_superuser:
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        if resource_request.hall_id != hall.id:
+            raise UnauthorizedAccessError('Resource request does not belong to the specified hall.')
         resource_request.reviewed_by_admin = user
     else:
         mapping = _ensure_inventory_role_access(
@@ -4431,12 +4863,13 @@ def auditedInventoryUpdateService(*, user, inventory_id: int, quantity=None, con
     return _serialize_inventory_item(inventory)
 
 
-def getInventoryUpdateLogsService(*, user):
+def getInventoryUpdateLogsService(*, user, hall_id: str = None):
     """Return inventory update logs for hall scope or all (superuser)."""
     logs = []
-    if user.is_superuser:
-        for hall in selectors.get_all_halls():
-            logs.extend(list(selectors.get_inventory_update_logs_by_hall(hall=hall)))
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        logs = selectors.get_inventory_update_logs_by_hall(hall=hall)
     else:
         mapping = _ensure_inventory_role_access(
             user=user,
@@ -5112,19 +5545,21 @@ def submitHostelReportToSuperAdminService(*, user, report_id: int, submission_no
     return _serialize_hostel_report(report)
 
 
-def listSubmittedHostelReportsService(*, user, statuses=None):
+def listSubmittedHostelReportsService(*, user, statuses=None, hall_id: str = None):
     """Super admin list of submitted/reviewed reports."""
     role, _ = resolve_hostel_rbac_role_service(user=user)
     if role != 'super_admin':
         raise UnauthorizedAccessError('Only super admin can review submitted reports.')
 
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
     reports = selectors.get_submitted_reports()
+    reports = reports.filter(hall_id=hall.id)
     if statuses:
         reports = reports.filter(status__in=statuses)
     return [_serialize_hostel_report(report) for report in reports]
 
 
-def getHostelReportDetailService(*, user, report_id: int, log_view=True):
+def getHostelReportDetailService(*, user, report_id: int, log_view=True, hall_id: str = None):
     """Get report detail if user is creator or super admin."""
     try:
         report = selectors.get_report_by_id(report_id=report_id)
@@ -5134,6 +5569,10 @@ def getHostelReportDetailService(*, user, report_id: int, log_view=True):
     role, _ = resolve_hostel_rbac_role_service(user=user)
     if role != 'super_admin' and report.created_by_id != user.id:
         raise UnauthorizedAccessError('You are not authorized to view this report.')
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        if report.hall_id != hall.id:
+            raise UnauthorizedAccessError('Report does not belong to the specified hall.')
 
     if log_view:
         _log_report_action(
@@ -5147,7 +5586,7 @@ def getHostelReportDetailService(*, user, report_id: int, log_view=True):
 
 
 @transaction.atomic
-def reviewSubmittedHostelReportService(*, user, report_id: int, decision: str, feedback: str = ''):
+def reviewSubmittedHostelReportService(*, user, report_id: int, decision: str, feedback: str = '', hall_id: str = None):
     """Super admin reviews submitted report and provides feedback/decision."""
     role, _ = resolve_hostel_rbac_role_service(user=user)
     if role != 'super_admin':
@@ -5157,6 +5596,10 @@ def reviewSubmittedHostelReportService(*, user, report_id: int, decision: str, f
         report = selectors.get_report_by_id(report_id=report_id)
     except HostelGeneratedReport.DoesNotExist:
         raise HostelReportNotFoundError('Report not found.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    if report.hall_id != hall.id:
+        raise UnauthorizedAccessError('Report does not belong to the specified hall.')
 
     if report.status not in [HostelReportStatusChoices.SUBMITTED, HostelReportStatusChoices.REVIEWED]:
         raise InvalidOperationError('Only submitted reports can be reviewed.')
@@ -5197,7 +5640,7 @@ def reviewSubmittedHostelReportService(*, user, report_id: int, decision: str, f
     return _serialize_hostel_report(report)
 
 
-def logHostelReportDownloadService(*, user, report_id: int, download_format: str):
+def logHostelReportDownloadService(*, user, report_id: int, download_format: str, hall_id: str = None):
     """Log report download activity for audit trail."""
     try:
         report = selectors.get_report_by_id(report_id=report_id)
@@ -5207,6 +5650,10 @@ def logHostelReportDownloadService(*, user, report_id: int, download_format: str
     role, _ = resolve_hostel_rbac_role_service(user=user)
     if role != 'super_admin' and report.created_by_id != user.id:
         raise UnauthorizedAccessError('You are not authorized to download this report.')
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        if report.hall_id != hall.id:
+            raise UnauthorizedAccessError('Report does not belong to the specified hall.')
 
     _log_report_action(
         report=report,

@@ -115,6 +115,24 @@ def _require_super_admin(user):
     return Response({'error': 'Only Super Admin can perform this action.'}, status=status.HTTP_403_FORBIDDEN)
 
 
+def _extract_hall_id(request):
+    hall_id = (request.query_params.get('hall_id') or '').strip()
+    if hall_id:
+        return hall_id
+    if hasattr(request, 'data'):
+        return (request.data.get('hall_id') or '').strip()
+    return ''
+
+
+def _require_hall_for_super_admin(request):
+    if not is_superuser(request.user):
+        return None, None
+    hall_id = _extract_hall_id(request)
+    if not hall_id:
+        return None, Response({'error': 'hall_id is required for super admin requests.'}, status=status.HTTP_400_BAD_REQUEST)
+    return hall_id, None
+
+
 def authorizeRoles(*allowed_roles):
     """ERP-style RBAC guard for hostel APIs.
 
@@ -1536,10 +1554,16 @@ def getNoticesController(request):
 
 def _get_notices_response(request):
     """Internal notice-list handler shared by notice endpoints."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        notices = services.getAllNoticesService(user=request.user)
+        notices = services.getAllNoticesService(user=request.user, hall_id=hall_id)
     except services.UserHallMappingMissingError as exc:
         return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     data = [
         {
             'id': notice.id,
@@ -3644,12 +3668,17 @@ def caretakerVerifyRoomVacationController(request, request_id):
 @permission_classes([IsAuthenticated])
 def roomVacationRequestsForFinalizationController(request):
     """Super admin fetches room vacation requests for finalization."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     statuses = request.query_params.getlist('status')
     statuses = [value for value in statuses if value]
     try:
         payload = services.getRoomVacationRequestsForFinalizationService(
             user=request.user,
             statuses=statuses or None,
+            hall_id=hall_id,
         )
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
@@ -3661,11 +3690,16 @@ def roomVacationRequestsForFinalizationController(request):
 @permission_classes([IsAuthenticated])
 def finalizeRoomVacationController(request, request_id):
     """Super admin finalizes room vacation after clearance approval."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
         payload = services.finalizeRoomVacationService(
             user=request.user,
             request_id=request_id,
             confirm=bool(request.data.get('confirm', False)),
+            hall_id=hall_id,
         )
         return Response(
             {
@@ -3764,12 +3798,17 @@ def submitHostelReportController(request, report_id):
 @permission_classes([IsAuthenticated])
 def submittedHostelReportsController(request):
     """Super admin list of submitted reports for review."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     statuses = request.query_params.getlist('status')
     statuses = [value for value in statuses if value]
     try:
         payload = services.listSubmittedHostelReportsService(
             user=request.user,
             statuses=statuses or None,
+            hall_id=hall_id,
         )
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
@@ -3781,11 +3820,16 @@ def submittedHostelReportsController(request):
 @permission_classes([IsAuthenticated])
 def hostelReportDetailController(request, report_id):
     """Detailed report payload for creator/super admin review."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
         payload = services.getHostelReportDetailService(
             user=request.user,
             report_id=report_id,
             log_view=True,
+            hall_id=hall_id,
         )
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
@@ -3797,12 +3841,17 @@ def hostelReportDetailController(request, report_id):
 @permission_classes([IsAuthenticated])
 def reviewHostelReportController(request, report_id):
     """Super admin approves report or requests revision with feedback."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
         payload = services.reviewSubmittedHostelReportService(
             user=request.user,
             report_id=report_id,
             decision=request.data.get('decision', ''),
             feedback=request.data.get('feedback', ''),
+            hall_id=hall_id,
         )
         return Response(
             {
@@ -3858,6 +3907,7 @@ def downloadHostelReportController(request, report_id):
             user=request.user,
             report_id=report_id,
             log_view=False,
+            hall_id=_extract_hall_id(request),
         )
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3877,6 +3927,7 @@ def downloadHostelReportController(request, report_id):
         user=request.user,
         report_id=report_id,
         download_format=download_format,
+        hall_id=_extract_hall_id(request),
     )
 
     if download_format == 'csv':
@@ -3904,8 +3955,12 @@ def downloadHostelReportController(request, report_id):
 @permission_classes([IsAuthenticated])
 def inventoryDashboardController(request):
     """UC-026/027/028 inventory dashboard list by role scope."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getInventoryDashboardService(user=request.user)
+        payload = services.getInventoryDashboardService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3938,8 +3993,12 @@ def submitInventoryInspectionController(request):
 @permission_classes([IsAuthenticated])
 def inventoryInspectionsController(request):
     """List inventory inspection records."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getInventoryInspectionsService(user=request.user)
+        payload = services.getInventoryInspectionsService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3973,8 +4032,12 @@ def submitResourceRequirementRequestController(request):
 @permission_classes([IsAuthenticated])
 def resourceRequirementRequestsController(request):
     """List resource requirement requests for review/track."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getResourceRequestsService(user=request.user)
+        payload = services.getResourceRequestsService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3985,12 +4048,17 @@ def resourceRequirementRequestsController(request):
 @permission_classes([IsAuthenticated])
 def reviewResourceRequirementRequestController(request, request_id):
     """Warden/admin reviews resource request."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
         payload = services.reviewResourceRequestService(
             user=request.user,
             request_id=request_id,
             decision=request.data.get('decision', ''),
             remarks=request.data.get('remarks', ''),
+            hall_id=hall_id,
         )
         return Response(
             {
@@ -4032,9 +4100,122 @@ def updateInventoryRecordController(request, inventory_id):
 @permission_classes([IsAuthenticated])
 def inventoryUpdateLogsController(request):
     """List inventory update logs for audit."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getInventoryUpdateLogsService(user=request.user)
+        payload = services.getInventoryUpdateLogsService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ══════════════════════════════════════════════════════════════
+# GUARD DUTY MANAGEMENT CONTROLLERS
+# ══════════════════════════════════════════════════════════════
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin', 'warden', 'caretaker')
+def guardDutySchedulesController(request):
+    """Super admin manages guard schedules; warden/caretaker can view schedules."""
+    try:
+        if request.method == 'GET':
+            payload = services.getGuardDutySchedulesService(
+                user=request.user,
+                hall_id=_extract_hall_id(request),
+                day=request.query_params.get('day', ''),
+            )
+            return Response(payload, status=status.HTTP_200_OK)
+
+        override_policy = str(request.data.get('override_policy', 'false')).strip().lower() in {'1', 'true', 'yes'}
+        payload = services.createGuardDutyScheduleService(
+            user=request.user,
+            hall_id=_extract_hall_id(request),
+            staff_id=request.data.get('staff_id'),
+            day=request.data.get('day'),
+            start_time=request.data.get('start_time'),
+            end_time=request.data.get('end_time'),
+            override_policy=override_policy,
+        )
+        return Response({'message': 'Guard duty schedule saved successfully.', 'schedule': payload}, status=status.HTTP_201_CREATED)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['PATCH', 'DELETE'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin')
+def guardDutyScheduleDetailController(request, schedule_id):
+    """Update or delete a guard duty schedule entry by super admin."""
+    try:
+        hall_id = _extract_hall_id(request)
+        if request.method == 'PATCH':
+            override_policy = str(request.data.get('override_policy', 'false')).strip().lower() in {'1', 'true', 'yes'}
+            payload = services.updateGuardDutyScheduleService(
+                user=request.user,
+                schedule_id=schedule_id,
+                hall_id=hall_id,
+                staff_id=request.data.get('staff_id'),
+                day=request.data.get('day'),
+                start_time=request.data.get('start_time'),
+                end_time=request.data.get('end_time'),
+                override_policy=override_policy,
+            )
+            return Response({'message': 'Guard duty schedule updated successfully.', 'schedule': payload}, status=status.HTTP_200_OK)
+
+        services.deleteGuardDutyScheduleService(
+            user=request.user,
+            schedule_id=schedule_id,
+            hall_id=hall_id,
+        )
+        return Response({'message': 'Guard duty schedule removed successfully.'}, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin', 'warden', 'caretaker')
+def guardDutyConcernsController(request):
+    """Warden/caretaker raise concerns; all authorized roles can view scoped concerns."""
+    try:
+        if request.method == 'GET':
+            payload = services.listGuardDutyConcernsService(
+                user=request.user,
+                hall_id=_extract_hall_id(request),
+            )
+            return Response({'concerns': payload}, status=status.HTTP_200_OK)
+
+        payload = services.raiseGuardDutyConcernService(
+            user=request.user,
+            subject=request.data.get('subject', ''),
+            message=request.data.get('message', ''),
+        )
+        return Response({'message': 'Guard duty concern submitted to super admin.', 'concern': payload}, status=status.HTTP_201_CREATED)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin')
+def resolveGuardDutyConcernController(request, concern_id):
+    """Super admin resolves a guard duty concern."""
+    try:
+        payload = services.resolveGuardDutyConcernService(
+            user=request.user,
+            concern_id=concern_id,
+            hall_id=_extract_hall_id(request),
+            response_notes=request.data.get('response_notes', ''),
+        )
+        return Response({'message': 'Guard duty concern resolved successfully.', 'concern': payload}, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

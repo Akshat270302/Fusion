@@ -463,6 +463,7 @@ class StaffSchedule(models.Model):
     hall = models.ForeignKey(Hall, on_delete=models.CASCADE)
     staff_id = models.ForeignKey(Staff, on_delete=models.CASCADE)
     staff_type = models.CharField(max_length=100, default='Caretaker')
+    shift_label = models.CharField(max_length=50, default='General')
     day = models.CharField(max_length=15, choices=DayOfWeek.choices)
     start_time = models.TimeField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
