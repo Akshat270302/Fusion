@@ -24,9 +24,6 @@ HM-WF-106,"Hostel Creation, Staffing, and Activation",End-to-End,"Super Admin cr
 HM-WF-106,"Hostel Creation, Staffing, and Activation",Negative,Super Admin tries to activate hostel without assigning Warden,Activation blocked — BR-HM-019 Warden required
 HM-WF-106,"Hostel Creation, Staffing, and Activation",Negative,Super Admin tries to activate hostel without assigning Caretaker,Activation blocked — BR-HM-019 Caretaker required
 HM-WF-106,"Hostel Creation, Staffing, and Activation",Negative,Super Admin tries to deactivate hostel with occupied rooms,Deactivation blocked — BR-HM-008 occupied rooms exist
-HM-WF-107,Guard Shift Scheduling and Security Review,End-to-End,"Warden creates weekly shift schedule with adequate coverage, reviews security status","Shift schedule saved, guards notified, security dashboard shows full coverage"
-HM-WF-107,Guard Shift Scheduling and Security Review,Negative,Warden assigns same guard to overlapping shifts,Schedule blocked — BR-HM-016 shift conflict detected
-HM-WF-107,Guard Shift Scheduling and Security Review,Negative,Warden saves schedule with mandatory shifts unassigned,Schedule blocked — BR-HM-026 minimum coverage not met
 HM-WF-108,"Inventory Check, Issue Logging, and Resource Request",End-to-End,"Caretaker inspects, finds damaged items, logs discrepancy, submits replacement request","Discrepancy logged per BR-HM-021, inventory records updated, resource request created with status='Pending'"
 HM-WF-108,"Inventory Check, Issue Logging, and Resource Request",End-to-End,"Caretaker inspects inventory, finds no issues","Inspection completed, no discrepancies logged, workflow ends"
 HM-WF-108,"Inventory Check, Issue Logging, and Resource Request",Negative,Caretaker submits resource request with empty justification,Request blocked — BR-HM-030 justification required

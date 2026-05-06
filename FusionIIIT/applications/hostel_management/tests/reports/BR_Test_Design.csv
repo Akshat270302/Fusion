@@ -55,11 +55,6 @@ BR-HM-012,Data Scoping by Role and Assignment,Invalid,Caretaker of Hostel A trie
 BR-HM-022,File Upload Validation,Valid,Upload 2MB PDF document as evidence,File accepted and stored
 BR-HM-022,File Upload Validation,Invalid,Upload 15MB file exceeding size limit,Upload rejected — file exceeds maximum size
 BR-HM-022,File Upload Validation,Invalid,Upload .exe file,Upload rejected — unsupported file format
-BR-HM-016,Guard Shift Conflict Prevention,Valid,Assign guard to Morning shift (6AM-2PM) and another guard to Night shift (10PM-6AM),Shift assignments saved without conflict
-BR-HM-016,Guard Shift Conflict Prevention,Invalid,Assign same guard to Morning (6AM-2PM) and Afternoon (1PM-9PM) overlapping shifts,Assignment rejected — overlapping shifts detected
-BR-HM-026,Minimum Security Coverage Rules,Valid,Create night shift schedule with 3 guards (minimum required: 2),"Schedule saved, coverage requirement met"
-BR-HM-026,Minimum Security Coverage Rules,Invalid,Create night shift schedule with 1 guard (minimum required: 2),Schedule blocked — insufficient guard coverage
-BR-HM-027,Security Audit and Compliance Logging,Valid,Warden creates new shift schedule,"Schedule created with audit log entry (actor, timestamp, action)"
 BR-HM-021,Inventory Discrepancy Logging,Valid,"Log discrepancy: item='Desk', expected=10, actual=8, type='Missing', remarks='2 desks missing from Room 105'",Discrepancy record created with all details
 BR-HM-021,Inventory Discrepancy Logging,Invalid,Log discrepancy without specifying discrepancy type or remarks,Validation error — item details and remarks required
 BR-HM-030,Resource Requirement Request Validation,Valid,"Submit request: type='Replacement', item='Chair', quantity=5, justification='Damaged in storm'",Request submitted with status='Pending'

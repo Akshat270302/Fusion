@@ -130,26 +130,6 @@ workflows:
       - scenario: "Super Admin tries to deactivate hostel with occupied rooms"
         expected_final_state: "Deactivation blocked — BR-HM-008 occupied rooms exist"
 
-
-  # ===========================================================================
-  # WF-107: SECURITY MANAGEMENT WORKFLOW
-  # ===========================================================================
-
-  - id: "HM-WF-107"
-    title: "Guard Shift Scheduling and Security Review"
-    description: "Warden creates/updates guard shift schedule → System validates conflicts and coverage → Warden reviews security dashboard"
-
-    e2e_tests:
-      - scenario: "Warden creates weekly shift schedule with adequate coverage, reviews security status"
-        expected_final_state: "Shift schedule saved, guards notified, security dashboard shows full coverage"
-
-    negative_tests:
-      - scenario: "Warden assigns same guard to overlapping shifts"
-        expected_final_state: "Schedule blocked — BR-HM-016 shift conflict detected"
-      - scenario: "Warden saves schedule with mandatory shifts unassigned"
-        expected_final_state: "Schedule blocked — BR-HM-026 minimum coverage not met"
-
-
   # ===========================================================================
   # WF-108: INVENTORY MANAGEMENT WORKFLOW
   # ===========================================================================

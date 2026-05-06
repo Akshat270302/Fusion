@@ -11,7 +11,6 @@ Workflows Covered:
 - HM-WF-104: Room Change Workflow
 - HM-WF-105: Fine Management Workflow
 - HM-WF-106: Hostel Creation and Activation Workflow
-- HM-WF-107: Security Management Workflow (Guard Shift Scheduling)
 - HM-WF-108: Inventory Management Workflow
 - HM-WF-109: Room Vacation Workflow
 - HM-WF-110: Notice Board Workflow
@@ -36,7 +35,7 @@ from applications.academic_information.models import Student
 from applications.hostel_management.models import (
     Hall, HallRoom, HostelLeave, HostelComplaint, RoomAllocation,
     RoomAllocationChange, HostelFine, GuestRoomBooking, HostelNoticeBoard,
-    HallCaretaker, HallWarden, StaffSchedule, HostelInventory,
+    HallCaretaker, HallWarden, HostelInventory,
     RoomVacationRequest, ExtendedStay, LeaveStatusChoices, ComplaintStatusChoices,
     RoomChangeStatusChoices, BookingStatusChoices, FineStatusChoices,
     RoomVacationStatusChoices, ExtendedStayStatusChoices
@@ -971,61 +970,6 @@ class TestWF106_HostelCreationActivationFlow(WFTestBase):
         else:
             self._record_result("Should require Warden", "Fail")
             pass
-
-
-# ══════════════════════════════════════════════════════════════
-# WF-107: SECURITY MANAGEMENT WORKFLOW
-# ══════════════════════════════════════════════════════════════
-
-class TestWF107_SecurityManagementFlow(WFTestBase):
-    """
-    WF-107: Guard Shift Scheduling and Security Review
-    
-    Flow: Warden creates/updates guard shift schedule →
-    System validates conflicts and coverage → Warden reviews
-    security dashboard
-    """
-
-    def test_e2e_wf107_shift_schedule_created(self):
-        """
-        E2E Test: Warden creates weekly shift schedule with
-        adequate coverage
-        """
-        self._test_id = "WF-107-E2E-01"
-        self._wf_id = "HM-WF-107"
-        self._test_category = "End-to-End"
-        self._scenario = "Warden → Create Shift Schedule → Verify Coverage"
-        self._expected_final_state = "Schedule saved, guards notified, full coverage shown"
-
-        # Step 1: Warden creates shift schedule
-        self.login_as_warden()
-        schedule_data = {
-            'hall_id': self.hall.id,
-            'guard_name': 'Guard 1',
-            'day': 'Monday',
-            'shift_start': '08:00',
-            'shift_end': '16:00'
-        }
-        resp = self.api_post('/hostel/schedule/create/', schedule_data, expected_status=201)
-        schedule_json = resp.json()
-        schedule_id = schedule_json.get('id')
-        step1_ok = schedule_id is not None
-        self._add_step(1, "Create shift schedule",
-                       "Schedule created",
-                       f"ID: {schedule_id}", step1_ok)
-
-        # Step 2: Verify schedule saved
-        schedule = StaffSchedule.objects.get(id=schedule_id)
-        step2_ok = schedule.day == 'Monday'
-        self._add_step(2, "Verify schedule in DB",
-                       "Schedule persisted",
-                       f"Day: {schedule.day}", step2_ok)
-
-        if self._all_steps_passed():
-            self._record_result("Shift schedule created successfully", "Pass")
-        else:
-            self._record_result("Schedule creation incomplete", "Fail")
-            self.fail("Schedule workflow failed")
 
 
 # ══════════════════════════════════════════════════════════════

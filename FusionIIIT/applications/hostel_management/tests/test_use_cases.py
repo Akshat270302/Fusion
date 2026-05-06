@@ -986,67 +986,6 @@ class TestUC023_ReassignStaff(UCTestBase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# SECURITY MANAGEMENT  (HM-UC-024 … HM-UC-025)
-# ═══════════════════════════════════════════════════════════════
-
-class TestUC024_ManageGuardShifts(UCTestBase):
-    """HM-UC-024: Warden manages guard shift schedules"""
-
-    def test_hp01_create_shift_schedule(self):
-        """Happy Path: Warden creates guard shift schedule"""
-        self._test_id = "HM-UC-024-HP-01"
-        self._uc_id = "HM-UC-024"
-        self._test_category = "Happy Path"
-        self._scenario = "Warden creates weekly shift schedule"
-        self._preconditions = "Warden logged in, guards available"
-        self._input_action = "POST schedules/ with shift assignments"
-        self._expected_result = "Schedule saved, coverage ensured"
-
-        self.login_as_warden()
-        response = self.api_post(
-            'hostel_management_api:schedules:schedule-list-create',
-            data={
-                'hall': self.hall.pk,
-                'shift_type': 'Morning',
-                'start_time': '06:00',
-                'end_time': '14:00',
-            },
-            expected_status=None,
-        )
-        if response.status_code in (200, 201):
-            self._record_result("Schedule created", "Pass", f"HTTP {response.status_code}")
-        else:
-            self._record_result(f"HTTP {response.status_code}", "Fail",
-                                response.content.decode()[:300])
-            self.fail(f"Expected 200/201, got {response.status_code}")
-
-
-class TestUC025_ReviewSecurityStatus(UCTestBase):
-    """HM-UC-025: Warden reviews hostel security status"""
-
-    def test_hp01_view_security_overview(self):
-        """Happy Path: Warden reviews security dashboard"""
-        self._test_id = "HM-UC-025-HP-01"
-        self._uc_id = "HM-UC-025"
-        self._test_category = "Happy Path"
-        self._scenario = "Warden reviews consolidated security dashboard"
-        self._preconditions = "Warden logged in, security data exists"
-        self._input_action = "GET schedules/"
-        self._expected_result = "Schedule data returned"
-
-        self.login_as_warden()
-        response = self.api_get(
-            'hostel_management_api:schedules:schedule-list-create',
-            expected_status=None,
-        )
-        if response.status_code == 200:
-            self._record_result("Security schedule accessible", "Pass", "HTTP 200")
-        else:
-            self._record_result(f"HTTP {response.status_code}", "Fail", "")
-            self.fail(f"Expected 200, got {response.status_code}")
-
-
-# ═══════════════════════════════════════════════════════════════
 # INVENTORY MANAGEMENT  (HM-UC-026 … HM-UC-028)
 # ═══════════════════════════════════════════════════════════════
 

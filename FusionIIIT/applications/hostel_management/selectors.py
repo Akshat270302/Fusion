@@ -38,12 +38,26 @@ from .models import (
     HostelRoomGroup,
     HostelRoomGroupMember,
     RoomChangeRequest,
+    ExtendedStay,
+    RoomVacationRequest,
+    RoomVacationChecklistItem,
+    HostelGeneratedReport,
+    HostelReportFilterTemplate,
+    HostelReportAttachment,
+    HostelReportAuditLog,
     RoomAllocationStatus,
     HostelTransactionHistory,
     HostelHistory,
     BookingStatus,
     LeaveStatus,
     FineStatus,
+    ExtendedStayStatusChoices,
+    VacationRequestStatusChoices,
+    ChecklistVerificationStatus,
+    FineCategory,
+    AttendanceStatus,
+    ComplaintStatus,
+    HostelReportStatusChoices,
 )
 
 
@@ -842,6 +856,232 @@ def get_room_change_requests_by_hall_and_status(*, hall, statuses=None):
     if statuses:
         qs = qs.filter(status__in=statuses)
     return qs.order_by('-created_at', '-id')
+
+
+def get_pending_extended_stay_by_student(*, student):
+    """Get latest pending extended stay request for student, if any."""
+    return ExtendedStay.objects.filter(
+        student=student,
+        status=ExtendedStayStatusChoices.PENDING,
+    ).order_by('-created_at').first()
+
+
+def get_extended_stay_requests_by_student(*, student):
+    """Get extended stay request history for student."""
+    return ExtendedStay.objects.filter(student=student).select_related(
+        'hall',
+        'caretaker_decided_by__id__user',
+        'warden_decided_by__id__user',
+    ).order_by('-created_at', '-id')
+
+
+def get_extended_stay_request_by_id(*, request_id: int):
+    """Get extended stay request by numeric ID."""
+    return ExtendedStay.objects.select_related(
+        'hall',
+        'student__id__user',
+        'requested_by',
+        'caretaker_decided_by__id__user',
+        'warden_decided_by__id__user',
+    ).get(id=request_id)
+
+
+def get_extended_stay_request_by_id_and_user(*, request_id: int, user: User):
+    """Get extended stay request by ID scoped to requesting student user."""
+    return ExtendedStay.objects.select_related(
+        'hall',
+        'student__id__user',
+        'requested_by',
+        'caretaker_decided_by__id__user',
+        'warden_decided_by__id__user',
+    ).get(id=request_id, requested_by=user)
+
+
+def get_extended_stay_requests_by_hall_and_status(*, hall, statuses=None):
+    """Get extended stay requests for a hall, optionally filtered by statuses."""
+    qs = ExtendedStay.objects.filter(hall=hall).select_related(
+        'student__id__user',
+        'requested_by',
+        'caretaker_decided_by__id__user',
+        'warden_decided_by__id__user',
+    )
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    return qs.order_by('-created_at', '-id')
+
+
+def get_pending_room_vacation_by_student(*, student):
+    """Get latest pending room vacation request for student, if any."""
+    return RoomVacationRequest.objects.filter(
+        student=student,
+        status__in=[
+            VacationRequestStatusChoices.PENDING_CLEARANCE,
+            VacationRequestStatusChoices.CLEARANCE_PENDING_ACTION_REQUIRED,
+            VacationRequestStatusChoices.CLEARANCE_APPROVED,
+        ],
+    ).order_by('-created_at').first()
+
+
+def get_room_vacation_requests_by_student(*, student):
+    """Get room vacation request history for student."""
+    return RoomVacationRequest.objects.filter(student=student).select_related(
+        'hall',
+        'allocation__room',
+        'clearance_approved_by__id__user',
+        'finalized_by',
+    ).prefetch_related('checklist_items').order_by('-created_at', '-id')
+
+
+def get_room_vacation_request_by_id(*, request_id: int):
+    """Get room vacation request by numeric ID."""
+    return RoomVacationRequest.objects.select_related(
+        'hall',
+        'student__id__user',
+        'requested_by',
+        'allocation__room',
+        'clearance_approved_by__id__user',
+        'finalized_by',
+    ).prefetch_related('checklist_items').get(id=request_id)
+
+
+def get_room_vacation_requests_by_hall_and_status(*, hall, statuses=None):
+    """Get room vacation requests for a hall, optionally filtered by status."""
+    qs = RoomVacationRequest.objects.filter(hall=hall).select_related(
+        'student__id__user',
+        'requested_by',
+        'allocation__room',
+        'clearance_approved_by__id__user',
+        'finalized_by',
+    ).prefetch_related('checklist_items')
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    return qs.order_by('-created_at', '-id')
+
+
+def get_room_vacation_requests_by_status(*, statuses=None):
+    """Get room vacation requests globally, optionally filtered by status."""
+    qs = RoomVacationRequest.objects.all().select_related(
+        'hall',
+        'student__id__user',
+        'requested_by',
+        'allocation__room',
+        'clearance_approved_by__id__user',
+        'finalized_by',
+    ).prefetch_related('checklist_items')
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    return qs.order_by('-created_at', '-id')
+
+
+def get_open_guest_bookings_by_student_and_hall(*, user, hall):
+    """Get active guest-room booking rows to infer unreturned/active issued keys or items."""
+    return GuestRoomBooking.objects.filter(
+        intender=user,
+        hall=hall,
+        status__in=[BookingStatus.CHECKED_IN, BookingStatus.CONFIRMED, BookingStatus.APPROVED],
+    ).order_by('-booking_date')
+
+
+def get_damage_fines_for_student_in_hall(*, student, hall):
+    """Get pending damage-category fines for student in hall."""
+    return HostelFine.objects.filter(
+        student=student,
+        hall=hall,
+        status=FineStatus.PENDING,
+        category=FineCategory.DAMAGE,
+    ).order_by('-created_at')
+
+
+def get_attendance_summary_for_student(*, student, since_date=None):
+    """Get attendance aggregate for a student."""
+    qs = HostelStudentAttendence.objects.filter(student_id=student)
+    if since_date:
+        qs = qs.filter(date__gte=since_date)
+
+    total_days = qs.count()
+    present_days = qs.filter(status=AttendanceStatus.PRESENT).count()
+    absent_days = max(total_days - present_days, 0)
+    percentage = round((present_days * 100.0 / total_days), 2) if total_days else 100.0
+
+    return {
+        'total_days': total_days,
+        'present_days': present_days,
+        'absent_days': absent_days,
+        'percentage': percentage,
+    }
+
+
+def count_open_complaints_for_student_in_hall(*, student, hall):
+    """Count unresolved complaints for student in hall as behavior indicator."""
+    return HostelComplaint.objects.filter(
+        student=student,
+        hall=hall,
+        status__in=[ComplaintStatus.PENDING, ComplaintStatus.IN_PROGRESS, ComplaintStatus.ESCALATED],
+    ).count()
+
+
+def get_report_by_id(*, report_id: int):
+    """Get generated report by ID with related entities."""
+    return HostelGeneratedReport.objects.select_related(
+        'hall',
+        'created_by',
+        'reviewed_by',
+    ).prefetch_related('attachments', 'audit_logs').get(id=report_id)
+
+
+def get_reports_by_creator(*, user):
+    """Get reports created by a specific user."""
+    return HostelGeneratedReport.objects.filter(created_by=user).select_related(
+        'hall',
+        'created_by',
+        'reviewed_by',
+    ).prefetch_related('attachments').order_by('-created_at')
+
+
+def get_reports_by_hall_and_creator_roles(*, hall, creator_roles=None):
+    """Get reports for a hall, optionally filtered by creator role."""
+    qs = HostelGeneratedReport.objects.filter(hall=hall)
+    if creator_roles:
+        qs = qs.filter(creator_role__in=creator_roles)
+    return qs.select_related('hall', 'created_by', 'reviewed_by').prefetch_related('attachments').order_by('-created_at')
+
+
+def get_reports_by_statuses(*, statuses=None):
+    """Get reports across halls, optionally filtered by status list."""
+    qs = HostelGeneratedReport.objects.all()
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    return qs.select_related('hall', 'created_by', 'reviewed_by').prefetch_related('attachments').order_by('-created_at')
+
+
+def get_submitted_reports():
+    """Get submitted reports awaiting or post review."""
+    return HostelGeneratedReport.objects.filter(
+        status__in=[
+            HostelReportStatusChoices.SUBMITTED,
+            HostelReportStatusChoices.REVIEWED,
+            HostelReportStatusChoices.APPROVED,
+            HostelReportStatusChoices.NEEDS_REVISION,
+        ]
+    ).select_related('hall', 'created_by', 'reviewed_by').prefetch_related('attachments').order_by('-submitted_at', '-created_at')
+
+
+def get_templates_by_owner_and_hall(*, owner, hall, report_type=None):
+    """Get saved report templates for owner and hall."""
+    qs = HostelReportFilterTemplate.objects.filter(owner=owner, hall=hall)
+    if report_type:
+        qs = qs.filter(report_type=report_type)
+    return qs.order_by('-updated_at')
+
+
+def get_template_by_id_for_owner(*, template_id: int, owner):
+    """Get template by ID scoped to owner."""
+    return HostelReportFilterTemplate.objects.get(id=template_id, owner=owner)
+
+
+def get_attachments_for_report(*, report):
+    """Get all attachments for a report."""
+    return HostelReportAttachment.objects.filter(report=report).select_related('uploaded_by').order_by('-uploaded_at')
 
 
 # ══════════════════════════════════════════════════════════════

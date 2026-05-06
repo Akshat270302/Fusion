@@ -126,6 +126,51 @@ class ReviewDecisionStatus(models.TextChoices):
     REJECTED = 'Rejected', 'Rejected'
 
 
+class ExtendedStayStatusChoices(models.TextChoices):
+    PENDING = 'Pending', 'Pending'
+    APPROVED = 'Approved', 'Approved'
+    REJECTED = 'Rejected', 'Rejected'
+    CANCELLED = 'Cancelled', 'Cancelled'
+
+
+class VacationRequestStatusChoices(models.TextChoices):
+    PENDING_CLEARANCE = 'Pending Clearance', 'Pending Clearance'
+    CLEARANCE_APPROVED = 'Clearance Approved', 'Clearance Approved'
+    CLEARANCE_PENDING_ACTION_REQUIRED = 'Clearance Pending - Action Required', 'Clearance Pending - Action Required'
+    COMPLETED = 'Completed', 'Completed'
+
+
+class ChecklistVerificationStatus(models.TextChoices):
+    PENDING = 'Pending', 'Pending'
+    VERIFIED = 'Verified', 'Verified'
+    PENDING_ACTION = 'Pending Action', 'Pending Action'
+
+
+class HostelReportTypeChoices(models.TextChoices):
+    ROOM_OCCUPANCY = 'room_occupancy', 'Room Occupancy Report'
+    ATTENDANCE_SUMMARY = 'attendance_summary', 'Attendance Summary Report'
+    LEAVE_ANALYSIS = 'leave_analysis', 'Leave Analysis Report'
+    FINE_DISCIPLINARY = 'fine_disciplinary', 'Fine and Disciplinary Report'
+    COMPLAINT_RESOLUTION = 'complaint_resolution', 'Complaint Resolution Report'
+    GUEST_ROOM_BOOKING = 'guest_room_booking', 'Guest Room Booking Report'
+    EXTENDED_STAY = 'extended_stay', 'Extended Stay Report'
+    COMPREHENSIVE = 'comprehensive', 'Comprehensive Hostel Report'
+
+
+class HostelReportStatusChoices(models.TextChoices):
+    DRAFT = 'Draft', 'Draft'
+    SUBMITTED = 'Submitted', 'Submitted'
+    REVIEWED = 'Reviewed', 'Reviewed'
+    APPROVED = 'Approved', 'Approved'
+    NEEDS_REVISION = 'Needs Revision', 'Needs Revision'
+
+
+class HostelReportPriorityChoices(models.TextChoices):
+    NORMAL = 'Normal', 'Normal'
+    HIGH = 'High', 'High'
+    URGENT = 'Urgent', 'Urgent'
+
+
 # ══════════════════════════════════════════════════════════════
 # MODELS
 # ══════════════════════════════════════════════════════════════
@@ -418,6 +463,7 @@ class StaffSchedule(models.Model):
     hall = models.ForeignKey(Hall, on_delete=models.CASCADE)
     staff_id = models.ForeignKey(Staff, on_delete=models.CASCADE)
     staff_type = models.CharField(max_length=100, default='Caretaker')
+    shift_label = models.CharField(max_length=50, default='General')
     day = models.CharField(max_length=15, choices=DayOfWeek.choices)
     start_time = models.TimeField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
@@ -1024,6 +1070,287 @@ class RoomChangeRequest(models.Model):
 
     def __str__(self):
         return f"{self.request_id or self.id} - {self.student.id.user.username} - {self.status}"
+
+
+class ExtendedStay(models.Model):
+    """Student extended stay application and review workflow."""
+
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='extended_stays')
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='extended_stays')
+    requested_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='extended_stay_requests')
+
+    start_date = models.DateField()
+    end_date = models.DateField()
+    reason = models.TextField()
+    faculty_authorization = models.TextField()
+
+    status = models.CharField(
+        max_length=20,
+        choices=ExtendedStayStatusChoices.choices,
+        default=ExtendedStayStatusChoices.PENDING,
+    )
+
+    caretaker_decision = models.CharField(
+        max_length=20,
+        choices=ReviewDecisionStatus.choices,
+        default=ReviewDecisionStatus.PENDING,
+    )
+    caretaker_remarks = models.TextField(blank=True)
+    caretaker_decided_by = models.ForeignKey(
+        Staff,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='extended_stay_caretaker_decisions',
+    )
+    caretaker_decided_at = models.DateTimeField(null=True, blank=True)
+
+    warden_decision = models.CharField(
+        max_length=20,
+        choices=ReviewDecisionStatus.choices,
+        default=ReviewDecisionStatus.PENDING,
+    )
+    warden_remarks = models.TextField(blank=True)
+    warden_decided_by = models.ForeignKey(
+        Faculty,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='extended_stay_warden_decisions',
+    )
+    warden_decided_at = models.DateTimeField(null=True, blank=True)
+
+    cancel_reason = models.TextField(blank=True)
+    canceled_at = models.DateTimeField(null=True, blank=True)
+
+    modified_count = models.PositiveIntegerField(default=0)
+    last_modified_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'hostel_management_extendedstay'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.student.id.user.username} - {self.start_date} to {self.end_date} ({self.status})"
+
+
+class RoomVacationRequest(models.Model):
+    """Room vacation request raised by student and processed by caretaker/admin."""
+
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='room_vacation_requests')
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='room_vacation_requests')
+    requested_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='room_vacation_requests')
+    allocation = models.ForeignKey(
+        StudentRoomAllocation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='vacation_requests',
+    )
+
+    intended_vacation_date = models.DateField()
+    reason = models.TextField()
+    status = models.CharField(
+        max_length=50,
+        choices=VacationRequestStatusChoices.choices,
+        default=VacationRequestStatusChoices.PENDING_CLEARANCE,
+    )
+
+    checklist_generated_at = models.DateTimeField(null=True, blank=True)
+    checklist_acknowledged = models.BooleanField(default=False)
+    checklist_acknowledged_at = models.DateTimeField(null=True, blank=True)
+
+    room_inspection_notes = models.TextField(blank=True)
+    room_damages_found = models.BooleanField(default=False)
+    room_damage_description = models.TextField(blank=True)
+    room_damage_fine_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    caretaker_review_comments = models.TextField(blank=True)
+    borrowed_items_notes = models.TextField(blank=True)
+    behavior_notes = models.TextField(blank=True)
+
+    clearance_certificate_no = models.CharField(max_length=40, blank=True, unique=True, null=True)
+    clearance_approved_by = models.ForeignKey(
+        Staff,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_vacation_clearances',
+    )
+    clearance_approved_at = models.DateTimeField(null=True, blank=True)
+
+    finalized_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='finalized_room_vacations',
+    )
+    finalized_at = models.DateTimeField(null=True, blank=True)
+    completion_report = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'hostel_management_roomvacationrequest'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"VacationRequest#{self.id} - {self.student.id.user.username} ({self.status})"
+
+
+class RoomVacationChecklistItem(models.Model):
+    """Generated and caretaker-verified clearance checklist item for room vacation."""
+
+    request = models.ForeignKey(
+        RoomVacationRequest,
+        on_delete=models.CASCADE,
+        related_name='checklist_items',
+    )
+    code = models.CharField(max_length=50)
+    title = models.CharField(max_length=120)
+    details = models.TextField(blank=True)
+    is_blocking = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=20,
+        choices=ChecklistVerificationStatus.choices,
+        default=ChecklistVerificationStatus.PENDING,
+    )
+    caretaker_comment = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'hostel_management_roomvacationchecklistitem'
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['request', 'code'],
+                name='unique_vacation_checklist_code_per_request',
+            ),
+        ]
+
+    def __str__(self):
+        return f"VacationChecklist#{self.request_id}:{self.code} ({self.status})"
+
+
+class HostelGeneratedReport(models.Model):
+    """Generated hostel report with submission/review lifecycle."""
+
+    report_uid = models.CharField(max_length=32, unique=True, blank=True)
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='generated_reports')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='hostel_reports_created')
+    creator_role = models.CharField(max_length=20, default='other')
+
+    report_type = models.CharField(
+        max_length=40,
+        choices=HostelReportTypeChoices.choices,
+    )
+    title = models.CharField(max_length=200)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    filters = models.JSONField(default=dict, blank=True)
+    report_data = models.JSONField(default=dict, blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=HostelReportStatusChoices.choices,
+        default=HostelReportStatusChoices.DRAFT,
+    )
+    priority = models.CharField(
+        max_length=10,
+        choices=HostelReportPriorityChoices.choices,
+        default=HostelReportPriorityChoices.NORMAL,
+    )
+    submission_notes = models.TextField(blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='hostel_reports_reviewed',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_feedback = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'hostel_management_generatedreport'
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if not self.report_uid:
+            self.report_uid = f"HMR-{self.created_at.strftime('%Y%m%d')}-{self.id:06d}"
+            super().save(update_fields=['report_uid'])
+
+    def __str__(self):
+        return f"{self.report_uid or self.id} - {self.report_type} - {self.status}"
+
+
+class HostelReportFilterTemplate(models.Model):
+    """Saved report filter template for quick reuse."""
+
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='hostel_report_templates')
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='report_templates')
+    template_name = models.CharField(max_length=100)
+    report_type = models.CharField(max_length=40, choices=HostelReportTypeChoices.choices)
+    template_filters = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'hostel_management_reportfiltertemplate'
+        ordering = ['-updated_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['owner', 'hall', 'template_name', 'report_type'],
+                name='unique_report_template_per_owner_hall_and_type',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.template_name} ({self.report_type})"
+
+
+class HostelReportAttachment(models.Model):
+    """Supporting documents attached during report submission."""
+
+    report = models.ForeignKey(HostelGeneratedReport, on_delete=models.CASCADE, related_name='attachments')
+    uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='hostel_report_attachments')
+    file = models.FileField(upload_to='hostel/reports/supporting/')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'hostel_management_reportattachment'
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return f"Attachment#{self.id} for Report#{self.report_id}"
+
+
+class HostelReportAuditLog(models.Model):
+    """Audit trail for report create/submit/view/review/download actions."""
+
+    report = models.ForeignKey(HostelGeneratedReport, on_delete=models.CASCADE, related_name='audit_logs')
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='hostel_report_audit_actions')
+    action = models.CharField(max_length=50)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'hostel_management_reportauditlog'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Report#{self.report_id} {self.action}"
 
 
 class HostelTransactionHistory(models.Model):

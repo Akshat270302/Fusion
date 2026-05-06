@@ -45,6 +45,13 @@ from .models import (
     HostelRoomGroup,
     HostelRoomGroupMember,
     RoomChangeRequest,
+    ExtendedStay,
+    RoomVacationRequest,
+    RoomVacationChecklistItem,
+    HostelGeneratedReport,
+    HostelReportFilterTemplate,
+    HostelReportAttachment,
+    HostelReportAuditLog,
     HostelTransactionHistory,
     HostelHistory,
     BookingStatus,
@@ -53,6 +60,12 @@ from .models import (
     ComplaintStatus,
     FineCategory,
     RoomChangeRequestStatus,
+    ExtendedStayStatusChoices,
+    VacationRequestStatusChoices,
+    ChecklistVerificationStatus,
+    HostelReportTypeChoices,
+    HostelReportStatusChoices,
+    HostelReportPriorityChoices,
     ReviewDecisionStatus,
     RoomAllocationStatus,
     RoomStatus,
@@ -149,6 +162,16 @@ class LeaveNotFoundError(HostelManagementError):
     pass
 
 
+class ExtendedStayRequestNotFoundError(HostelManagementError):
+    """Extended stay request does not exist."""
+    pass
+
+
+class RoomVacationRequestNotFoundError(HostelManagementError):
+    """Room vacation request does not exist."""
+    pass
+
+
 class FineNotFoundError(HostelManagementError):
     """Fine does not exist."""
     pass
@@ -181,6 +204,16 @@ class LeaveValidationError(HostelManagementError):
 
 class RoomAssignmentError(HostelManagementError):
     """Room assignment cannot be completed."""
+    pass
+
+
+class HostelReportNotFoundError(HostelManagementError):
+    """Hostel report does not exist."""
+    pass
+
+
+class HostelReportValidationError(HostelManagementError):
+    """Hostel report input is invalid."""
     pass
 
 
@@ -280,6 +313,18 @@ def resolve_hostel_rbac_role_service(*, user):
     if not mapping:
         return 'other', None
     return mapping.role, mapping
+
+
+def _get_required_hall_for_super_admin(*, hall_id: str):
+    """Resolve hall by hall_id for super-admin scoped dashboards/actions."""
+    normalized_hall_id = (hall_id or '').strip()
+    if not normalized_hall_id:
+        raise InvalidOperationError('hall_id is required for super admin requests.')
+
+    hall = selectors.get_hall_by_hall_id_or_none(normalized_hall_id)
+    if not hall:
+        raise InvalidOperationError('Invalid hall_id provided.')
+    return hall
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1328,6 +1373,421 @@ def delete_staff_schedule(*, staff_id):
         schedule.delete()
 
 
+GUARD_DUTY_CONCERN_PREFIX = '[Guard Duty]'
+GUARD_DUTY_ALLOWED_DAYS = {
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+}
+
+
+def _normalize_guard_day(day: str) -> str:
+    normalized = str(day or '').strip().capitalize()
+    if normalized not in GUARD_DUTY_ALLOWED_DAYS:
+        raise InvalidOperationError('Invalid day provided for guard duty schedule.')
+    return normalized
+
+
+def _parse_guard_time(value, field_name: str):
+    if isinstance(value, datetime):
+        return value.time()
+    if hasattr(value, 'hour') and hasattr(value, 'minute'):
+        return value
+    try:
+        return datetime.strptime(str(value), '%H:%M').time()
+    except Exception:
+        raise InvalidOperationError(f'Invalid {field_name}. Use HH:MM format.')
+
+
+def _serialize_guard_schedule(schedule):
+    try:
+        # Safely extract staff information with fallbacks
+        staff_name = "Unknown"
+        staff_id_value = None
+
+        if schedule.staff_id:
+            # Use primitive PK value for JSON serialization.
+            staff_id_value = str(schedule.staff_id.pk)
+            try:
+                if schedule.staff_id.id and schedule.staff_id.id.user:
+                    staff_name = schedule.staff_id.id.user.username
+            except (AttributeError, Exception):
+                # Fallback to str representation if user access fails
+                staff_name = str(schedule.staff_id)
+        
+        return {
+            'id': schedule.id,
+            'hall_id': schedule.hall.hall_id if schedule.hall else None,
+            'hall_name': schedule.hall.hall_name if schedule.hall else None,
+            'staff_id': staff_id_value,
+            'staff_name': staff_name,
+            'staff_type': schedule.staff_type,
+            'day': schedule.day,
+            'start_time': schedule.start_time.strftime('%H:%M') if schedule.start_time else None,
+            'end_time': schedule.end_time.strftime('%H:%M') if schedule.end_time else None,
+        }
+    except Exception as exc:
+        # Return minimal safe data if serialization fails
+        return {
+            'id': schedule.id,
+            'hall_id': None,
+            'hall_name': None,
+            'staff_id': None,
+            'staff_name': f'Error: {str(exc)[:50]}',
+            'staff_type': schedule.staff_type,
+            'day': schedule.day,
+            'start_time': None,
+            'end_time': None,
+        }
+
+
+def _serialize_guard_concern(complaint):
+    return {
+        'id': complaint.id,
+        'hall_id': complaint.hall.hall_id if complaint.hall else None,
+        'hall_name': complaint.hall.hall_name if complaint.hall else None,
+        'subject': complaint.title.replace(f'{GUARD_DUTY_CONCERN_PREFIX} ', '', 1),
+        'message': complaint.description,
+        'status': complaint.status,
+        'raised_by': complaint.escalated_by.username if complaint.escalated_by else None,
+        'raised_at': complaint.escalated_at or complaint.created_at,
+        'response_notes': complaint.resolution_notes,
+        'resolved_by': complaint.resolved_by.username if complaint.resolved_by else None,
+        'resolved_at': complaint.resolved_at,
+        'created_at': complaint.created_at,
+    }
+
+
+def _get_guard_staff_pool():
+    try:
+        guard_user_ids = list(
+            HoldsDesignation.objects.filter(
+                designation__name__iregex=r'guard|security'
+            ).values_list('working_id', flat=True)
+        )
+
+        staff_qs = Staff.objects.select_related('id__user').all()
+        if guard_user_ids:
+            scoped = staff_qs.filter(id__user__id__in=guard_user_ids)
+            if scoped.exists():
+                staff_qs = scoped
+
+        guards = []
+        for staff in staff_qs.order_by('id__user__username'):
+            try:
+                guards.append({
+                    'staff_id': str(staff.pk),
+                    'username': staff.id.user.username if staff.id and staff.id.user else 'Unknown',
+                    'name': f'{staff.id.user.first_name} {staff.id.user.last_name}'.strip() or staff.id.user.username if staff.id and staff.id.user else 'Unknown',
+                })
+            except (AttributeError, Exception):
+                # Skip staff with broken relationships
+                continue
+
+        return guards
+    except Exception as exc:
+        # Return empty list if pool cannot be loaded
+        return []
+
+
+def _assert_guard_schedule_overlap_conflicts(*, staff, day: str, start_time, end_time, exclude_schedule_id=None, override_policy=False):
+    conflicts = StaffSchedule.objects.filter(
+        staff_id=staff,
+        day=day,
+        staff_type__iexact='guard',
+    )
+    if exclude_schedule_id is not None:
+        conflicts = conflicts.exclude(id=exclude_schedule_id)
+
+    overlap_exists = False
+    for existing in conflicts:
+        if not existing.start_time or not existing.end_time:
+            continue
+        if start_time < existing.end_time and end_time > existing.start_time:
+            overlap_exists = True
+            break
+
+    if overlap_exists and not override_policy:
+        raise InvalidOperationError('Guard has overlapping duty timings. Enable override_policy to proceed.')
+
+    if conflicts.count() >= 2 and not override_policy:
+        raise InvalidOperationError('Guard already has multiple shifts for this day. Enable override_policy to proceed.')
+
+
+def _resolve_guard_hall_context(*, user, hall_id: str = None, for_write: bool = False):
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        return role, hall
+
+    if for_write:
+        raise UnauthorizedAccessError('Only super admin can assign or modify guard duty schedules.')
+
+    if role not in [UserHostelMapping.ROLE_WARDEN, UserHostelMapping.ROLE_CARETAKER]:
+        raise UnauthorizedAccessError('Only super admin, warden, or caretaker can access guard duty data.')
+    if not mapping or not mapping.hall:
+        raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
+
+    return role, mapping.hall
+
+
+def getGuardDutySchedulesService(*, user, hall_id: str = None, day: str = None):
+    """Return guard duty schedules and security overview for a hall."""
+    try:
+        _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=False)
+
+        duty_qs = StaffSchedule.objects.filter(
+            hall=hall,
+            staff_type__iexact='guard',
+        ).select_related('hall', 'staff_id__id__user').order_by('day', 'start_time', 'id')
+
+        if day:
+            duty_qs = duty_qs.filter(day=_normalize_guard_day(day))
+
+        schedules = [_serialize_guard_schedule(entry) for entry in duty_qs]
+
+        # weekday = timezone.localtime().strftime('%A')
+        # now_time = timezone.localtime().time()
+        now = timezone.now()
+        weekday = now.strftime('%A')
+        now_time = now.time()
+        active_shifts = [
+            entry for entry in duty_qs
+            if entry.day == weekday
+            and entry.start_time
+            and entry.end_time
+            and entry.start_time <= now_time < entry.end_time
+        ]
+
+        day_counts = {day_name: 0 for day_name in GUARD_DUTY_ALLOWED_DAYS}
+        for entry in duty_qs:
+            if entry.day in day_counts:
+                day_counts[entry.day] += 1
+
+        uncovered_days = [day_name for day_name, count in day_counts.items() if count == 0]
+
+        return {
+            'hall': {
+                'hall_id': hall.hall_id,
+                'hall_name': hall.hall_name,
+            },
+            'available_guards': _get_guard_staff_pool(),
+            'schedules': schedules,
+            'overview': {
+                'total_guard_shifts': len(schedules),
+                'active_guard_count': len(active_shifts),
+                'active_shifts': [_serialize_guard_schedule(entry) for entry in active_shifts],
+                'uncovered_days': uncovered_days,
+                'coverage_by_day': day_counts,
+                'critical_gap': len(active_shifts) == 0,
+            },
+        }
+    except InvalidOperationError:
+        raise
+    except Exception as exc:
+        raise InvalidOperationError(f'Failed to load guard duty schedules: {str(exc)}')
+
+
+@transaction.atomic
+def createGuardDutyScheduleService(*, user, hall_id: str, staff_id: int, day: str, start_time, end_time, override_policy: bool = False):
+    """Create a guard duty schedule entry. Only super admin is allowed."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=True)
+
+    try:
+        staff = selectors.get_staff_by_id(staff_id)
+    except Staff.DoesNotExist:
+        raise StaffNotFoundError('Guard staff not found.')
+
+    normalized_day = _normalize_guard_day(day)
+    parsed_start = _parse_guard_time(start_time, 'start_time')
+    parsed_end = _parse_guard_time(end_time, 'end_time')
+    if parsed_end <= parsed_start:
+        raise InvalidOperationError('end_time must be after start_time.')
+
+    _assert_guard_schedule_overlap_conflicts(
+        staff=staff,
+        day=normalized_day,
+        start_time=parsed_start,
+        end_time=parsed_end,
+        override_policy=bool(override_policy),
+    )
+
+    schedule = StaffSchedule.objects.create(
+        hall=hall,
+        staff_id=staff,
+        staff_type='Guard',
+        day=normalized_day,
+        start_time=parsed_start,
+        end_time=parsed_end,
+    )
+
+    return _serialize_guard_schedule(schedule)
+
+
+@transaction.atomic
+def updateGuardDutyScheduleService(
+    *,
+    user,
+    schedule_id: int,
+    hall_id: str,
+    staff_id: int = None,
+    day: str = None,
+    start_time=None,
+    end_time=None,
+    override_policy: bool = False,
+):
+    """Update an existing guard duty schedule entry. Only super admin is allowed."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=True)
+
+    try:
+        schedule = StaffSchedule.objects.select_related('staff_id__id__user', 'hall').get(id=schedule_id)
+    except StaffSchedule.DoesNotExist:
+        raise InvalidOperationError('Guard duty schedule not found.')
+
+    if schedule.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected hall does not match this schedule entry.')
+
+    new_staff = schedule.staff_id
+    if staff_id is not None:
+        try:
+            new_staff = selectors.get_staff_by_id(staff_id)
+        except Staff.DoesNotExist:
+            raise StaffNotFoundError('Guard staff not found.')
+
+    new_day = _normalize_guard_day(day or schedule.day)
+    new_start = _parse_guard_time(start_time if start_time is not None else schedule.start_time, 'start_time')
+    new_end = _parse_guard_time(end_time if end_time is not None else schedule.end_time, 'end_time')
+
+    if new_end <= new_start:
+        raise InvalidOperationError('end_time must be after start_time.')
+
+    _assert_guard_schedule_overlap_conflicts(
+        staff=new_staff,
+        day=new_day,
+        start_time=new_start,
+        end_time=new_end,
+        exclude_schedule_id=schedule.id,
+        override_policy=bool(override_policy),
+    )
+
+    schedule.staff_id = new_staff
+    schedule.day = new_day
+    schedule.start_time = new_start
+    schedule.end_time = new_end
+    schedule.staff_type = 'Guard'
+    schedule.save(update_fields=['staff_id', 'day', 'start_time', 'end_time', 'staff_type'])
+
+    return _serialize_guard_schedule(schedule)
+
+
+@transaction.atomic
+def deleteGuardDutyScheduleService(*, user, schedule_id: int, hall_id: str):
+    """Delete a guard duty schedule entry. Only super admin is allowed."""
+    _, hall = _resolve_guard_hall_context(user=user, hall_id=hall_id, for_write=True)
+
+    try:
+        schedule = StaffSchedule.objects.get(id=schedule_id)
+    except StaffSchedule.DoesNotExist:
+        raise InvalidOperationError('Guard duty schedule not found.')
+
+    if schedule.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected hall does not match this schedule entry.')
+
+    day_entries = StaffSchedule.objects.filter(
+        hall=hall,
+        day=schedule.day,
+        staff_type__iexact='guard',
+    ).count()
+    if day_entries <= 1:
+        raise InvalidOperationError('Cannot remove the last guard shift for this day. Coverage gap detected.')
+
+    schedule.delete()
+
+
+@transaction.atomic
+def raiseGuardDutyConcernService(*, user, subject: str, message: str):
+    """Allow warden/caretaker to raise guard-duty concerns for super admin."""
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role not in [UserHostelMapping.ROLE_WARDEN, UserHostelMapping.ROLE_CARETAKER]:
+        raise UnauthorizedAccessError('Only warden or caretaker can raise guard duty concerns.')
+    if not mapping or not mapping.hall:
+        raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
+
+    normalized_subject = str(subject or '').strip()
+    normalized_message = str(message or '').strip()
+    if len(normalized_subject) < 3:
+        raise InvalidOperationError('Concern subject must be at least 3 characters long.')
+    if len(normalized_message) < 10:
+        raise InvalidOperationError('Concern message must be at least 10 characters long.')
+
+    concern = HostelComplaint.objects.create(
+        student=None,
+        hall=mapping.hall,
+        title=f'{GUARD_DUTY_CONCERN_PREFIX} {normalized_subject}',
+        description=normalized_message,
+        status=ComplaintStatus.ESCALATED,
+        escalation_reason='Guard duty concern raised for super admin review.',
+        escalated_by=user,
+        escalated_at=timezone.now(),
+    )
+    return _serialize_guard_concern(concern)
+
+
+def listGuardDutyConcernsService(*, user, hall_id: str = None):
+    """List guard-duty concerns for super admin or mapped hall users."""
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    elif role in [UserHostelMapping.ROLE_WARDEN, UserHostelMapping.ROLE_CARETAKER]:
+        if not mapping or not mapping.hall:
+            raise UserHallMappingMissingError('Hostel mapping is not configured for this user.')
+        hall = mapping.hall
+    else:
+        raise UnauthorizedAccessError('You are not authorized to view guard duty concerns.')
+
+    concerns = HostelComplaint.objects.filter(
+        hall=hall,
+        title__startswith=GUARD_DUTY_CONCERN_PREFIX,
+    ).select_related('hall', 'escalated_by', 'resolved_by').order_by('-created_at')
+
+    return [_serialize_guard_concern(concern) for concern in concerns]
+
+
+@transaction.atomic
+def resolveGuardDutyConcernService(*, user, concern_id: int, hall_id: str, response_notes: str):
+    """Resolve a guard-duty concern. Only super admin is allowed."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin':
+        raise UnauthorizedAccessError('Only super admin can resolve guard duty concerns.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+
+    try:
+        concern = HostelComplaint.objects.select_related('hall').get(id=concern_id)
+    except HostelComplaint.DoesNotExist:
+        raise InvalidOperationError('Guard duty concern not found.')
+
+    if not concern.title.startswith(GUARD_DUTY_CONCERN_PREFIX):
+        raise InvalidOperationError('Provided concern is not a guard duty concern.')
+    if concern.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected hall does not match this concern.')
+
+    notes = str(response_notes or '').strip()
+    if len(notes) < 5:
+        raise InvalidOperationError('Resolution notes must be at least 5 characters long.')
+
+    concern.status = ComplaintStatus.RESOLVED
+    concern.resolution_notes = notes
+    concern.resolved_by = user
+    concern.resolved_at = timezone.now()
+    concern.save(update_fields=['status', 'resolution_notes', 'resolved_by', 'resolved_at', 'updated_at'])
+    return _serialize_guard_concern(concern)
+
+
 # ══════════════════════════════════════════════════════════════
 # NOTICE BOARD SERVICES
 # ══════════════════════════════════════════════════════════════
@@ -1379,10 +1839,15 @@ def delete_notice(*, notice_id: int):
     notice.delete()
 
 
-def getAllNoticesService(*, user=None):
+def getAllNoticesService(*, user=None, hall_id: str = None):
     """Return notices scoped to authenticated user's mapped hall."""
-    if user is None or user.is_superuser:
+    if user is None:
         return selectors.get_all_notices()
+
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        return selectors.get_notices_by_hall(hall)
 
     mapping = resolve_user_hall_mapping_service(user=user, strict=True)
     return selectors.get_notices_by_hall(mapping.hall)
@@ -2038,6 +2503,946 @@ def allocateApprovedRoomChangeRequestService(*, user, room_change_request_id: in
         pass
 
     return _serialize_room_change_request(request_obj)
+
+
+def _validate_extended_stay_dates(*, start_date_obj: date, end_date_obj: date):
+    if end_date_obj < start_date_obj:
+        raise InvalidOperationError('end_date must be greater than or equal to start_date.')
+
+    if start_date_obj < timezone.now().date():
+        raise InvalidOperationError('start_date cannot be in the past.')
+
+
+def _serialize_extended_stay(request_obj: ExtendedStay):
+    return {
+        'id': request_obj.id,
+        'hall_id': request_obj.hall.hall_id if request_obj.hall else None,
+        'hall_name': request_obj.hall.hall_name if request_obj.hall else None,
+        'student_username': request_obj.student.id.user.username if request_obj.student and request_obj.student.id and request_obj.student.id.user else None,
+        'requested_by': request_obj.requested_by.username if request_obj.requested_by else None,
+        'start_date': request_obj.start_date.isoformat() if request_obj.start_date else None,
+        'end_date': request_obj.end_date.isoformat() if request_obj.end_date else None,
+        'reason': request_obj.reason,
+        'faculty_authorization': request_obj.faculty_authorization,
+        'status': request_obj.status,
+        'caretaker_decision': request_obj.caretaker_decision,
+        'caretaker_remarks': request_obj.caretaker_remarks,
+        'caretaker_decided_by': request_obj.caretaker_decided_by.id.user.username if request_obj.caretaker_decided_by and request_obj.caretaker_decided_by.id and request_obj.caretaker_decided_by.id.user else None,
+        'caretaker_decided_at': request_obj.caretaker_decided_at.isoformat() if request_obj.caretaker_decided_at else None,
+        'warden_decision': request_obj.warden_decision,
+        'warden_remarks': request_obj.warden_remarks,
+        'warden_decided_by': request_obj.warden_decided_by.id.user.username if request_obj.warden_decided_by and request_obj.warden_decided_by.id and request_obj.warden_decided_by.id.user else None,
+        'warden_decided_at': request_obj.warden_decided_at.isoformat() if request_obj.warden_decided_at else None,
+        'cancel_reason': request_obj.cancel_reason,
+        'canceled_at': request_obj.canceled_at.isoformat() if request_obj.canceled_at else None,
+        'modified_count': request_obj.modified_count,
+        'last_modified_at': request_obj.last_modified_at.isoformat() if request_obj.last_modified_at else None,
+        'created_at': request_obj.created_at.isoformat() if request_obj.created_at else None,
+        'updated_at': request_obj.updated_at.isoformat() if request_obj.updated_at else None,
+    }
+
+
+@transaction.atomic
+def submitExtendedStayRequestService(*, user, start_date: date, end_date: date, reason: str, faculty_authorization: str):
+    """Student submits extended stay request during vacation period."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can submit extended stay requests.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    reason_value = (reason or '').strip()
+    auth_value = (faculty_authorization or '').strip()
+    if not reason_value:
+        raise InvalidOperationError('reason is required.')
+    if not auth_value:
+        raise InvalidOperationError('faculty_authorization is required.')
+
+    _validate_extended_stay_dates(start_date_obj=start_date, end_date_obj=end_date)
+
+    pending = selectors.get_pending_extended_stay_by_student(student=student)
+    if pending:
+        raise InvalidOperationError('You already have a pending extended stay request.')
+
+    request_obj = ExtendedStay.objects.create(
+        hall=mapping.hall,
+        student=student,
+        requested_by=user,
+        start_date=start_date,
+        end_date=end_date,
+        reason=reason_value,
+        faculty_authorization=auth_value,
+        status=ExtendedStayStatusChoices.PENDING,
+        caretaker_decision=ReviewDecisionStatus.PENDING,
+        warden_decision=ReviewDecisionStatus.PENDING,
+    )
+
+    caretaker = selectors.get_caretaker_by_hall(mapping.hall)
+    warden = selectors.get_warden_by_hall(mapping.hall)
+    try:
+        from notification.views import hostel_notifications
+        if caretaker and caretaker.staff and caretaker.staff.id and caretaker.staff.id.user:
+            hostel_notifications(sender=user, recipient=caretaker.staff.id.user, type='extendedStay_request')
+        if warden and warden.faculty and warden.faculty.id and warden.faculty.id.user:
+            hostel_notifications(sender=user, recipient=warden.faculty.id.user, type='extendedStay_request')
+    except Exception:
+        pass
+
+    return _serialize_extended_stay(request_obj)
+
+
+def getMyExtendedStayRequestsService(*, user):
+    """Student views own extended stay request history."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can view their extended stay requests.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    requests = selectors.get_extended_stay_requests_by_student(student=student)
+    return [_serialize_extended_stay(item) for item in requests]
+
+
+@transaction.atomic
+def modifyExtendedStayRequestService(*, user, request_id: int, start_date: date, end_date: date, reason: str, faculty_authorization: str):
+    """Student modifies own pending extended stay request."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can modify extended stay requests.')
+
+    try:
+        request_obj = selectors.get_extended_stay_request_by_id_and_user(request_id=request_id, user=user)
+    except ExtendedStay.DoesNotExist:
+        raise ExtendedStayRequestNotFoundError('Extended stay request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Request does not belong to your hostel.')
+    if request_obj.status != ExtendedStayStatusChoices.PENDING:
+        raise InvalidOperationError('Only pending requests can be modified.')
+
+    reason_value = (reason or '').strip()
+    auth_value = (faculty_authorization or '').strip()
+    if not reason_value:
+        raise InvalidOperationError('reason is required.')
+    if not auth_value:
+        raise InvalidOperationError('faculty_authorization is required.')
+
+    _validate_extended_stay_dates(start_date_obj=start_date, end_date_obj=end_date)
+
+    request_obj.start_date = start_date
+    request_obj.end_date = end_date
+    request_obj.reason = reason_value
+    request_obj.faculty_authorization = auth_value
+    request_obj.modified_count = request_obj.modified_count + 1
+    request_obj.last_modified_at = timezone.now()
+    request_obj.save(update_fields=['start_date', 'end_date', 'reason', 'faculty_authorization', 'modified_count', 'last_modified_at', 'updated_at'])
+
+    try:
+        caretaker = selectors.get_caretaker_by_hall(mapping.hall)
+        warden = selectors.get_warden_by_hall(mapping.hall)
+        from notification.views import hostel_notifications
+        if caretaker and caretaker.staff and caretaker.staff.id and caretaker.staff.id.user:
+            hostel_notifications(sender=user, recipient=caretaker.staff.id.user, type='extendedStay_modified')
+        if warden and warden.faculty and warden.faculty.id and warden.faculty.id.user:
+            hostel_notifications(sender=user, recipient=warden.faculty.id.user, type='extendedStay_modified')
+    except Exception:
+        pass
+
+    return _serialize_extended_stay(request_obj)
+
+
+@transaction.atomic
+def cancelExtendedStayRequestService(*, user, request_id: int, cancel_reason: str = ''):
+    """Student cancels own pending extended stay request."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can cancel extended stay requests.')
+
+    try:
+        request_obj = selectors.get_extended_stay_request_by_id_and_user(request_id=request_id, user=user)
+    except ExtendedStay.DoesNotExist:
+        raise ExtendedStayRequestNotFoundError('Extended stay request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Request does not belong to your hostel.')
+    if request_obj.status != ExtendedStayStatusChoices.PENDING:
+        raise InvalidOperationError('Only pending requests can be cancelled.')
+
+    request_obj.status = ExtendedStayStatusChoices.CANCELLED
+    request_obj.cancel_reason = (cancel_reason or '').strip()
+    request_obj.canceled_at = timezone.now()
+    request_obj.save(update_fields=['status', 'cancel_reason', 'canceled_at', 'updated_at'])
+
+    return _serialize_extended_stay(request_obj)
+
+
+def getExtendedStayRequestsForReviewService(*, user, statuses=None):
+    """Caretaker/Warden dashboard view for extended stay requests in own hall."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role not in [UserHostelMapping.ROLE_CARETAKER, UserHostelMapping.ROLE_WARDEN]:
+        raise UnauthorizedAccessError('Only caretaker/warden can view extended stay requests.')
+
+    normalized_statuses = statuses or [
+        ExtendedStayStatusChoices.PENDING,
+        ExtendedStayStatusChoices.APPROVED,
+        ExtendedStayStatusChoices.REJECTED,
+    ]
+    requests = selectors.get_extended_stay_requests_by_hall_and_status(
+        hall=mapping.hall,
+        statuses=normalized_statuses,
+    )
+    return [_serialize_extended_stay(item) for item in requests]
+
+
+def _apply_extended_stay_review_decision(*, decision: str, remarks: str):
+    decision_value = (decision or '').strip().capitalize()
+    remarks_value = (remarks or '').strip()
+    if decision_value not in [ReviewDecisionStatus.APPROVED, ReviewDecisionStatus.REJECTED]:
+        raise InvalidOperationError('decision must be Approved or Rejected.')
+    if decision_value == ReviewDecisionStatus.REJECTED and not remarks_value:
+        raise InvalidOperationError('remarks are required when rejecting a request.')
+    return decision_value, remarks_value
+
+
+@transaction.atomic
+def caretakerReviewExtendedStayRequestService(*, user, extended_stay_request_id: int, decision: str, remarks: str = ''):
+    """Caretaker reviews extended stay request."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
+        raise UnauthorizedAccessError('Only caretaker can submit caretaker review decision.')
+
+    try:
+        request_obj = selectors.get_extended_stay_request_by_id(request_id=extended_stay_request_id)
+    except ExtendedStay.DoesNotExist:
+        raise ExtendedStayRequestNotFoundError('Extended stay request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Request does not belong to your hostel.')
+    if request_obj.status not in [ExtendedStayStatusChoices.PENDING, ExtendedStayStatusChoices.APPROVED]:
+        raise InvalidOperationError('Only pending/approved requests can be reviewed.')
+
+    decision_value, remarks_value = _apply_extended_stay_review_decision(decision=decision, remarks=remarks)
+    caretaker_staff = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+
+    request_obj.caretaker_decision = decision_value
+    request_obj.caretaker_remarks = remarks_value
+    request_obj.caretaker_decided_by = caretaker_staff
+    request_obj.caretaker_decided_at = timezone.now()
+
+    if decision_value == ReviewDecisionStatus.REJECTED:
+        request_obj.status = ExtendedStayStatusChoices.REJECTED
+    else:
+        request_obj.status = ExtendedStayStatusChoices.APPROVED
+
+    request_obj.save()
+
+    try:
+        from notification.views import hostel_notifications
+        notif_type = 'extendedStay_approved' if request_obj.status == ExtendedStayStatusChoices.APPROVED else 'extendedStay_rejected' if request_obj.status == ExtendedStayStatusChoices.REJECTED else 'extendedStay_reviewed'
+        hostel_notifications(sender=user, recipient=request_obj.requested_by, type=notif_type)
+    except Exception:
+        pass
+
+    return _serialize_extended_stay(request_obj)
+
+
+@transaction.atomic
+def wardenReviewExtendedStayRequestService(*, user, extended_stay_request_id: int, decision: str, remarks: str = ''):
+    """Warden reviews extended stay request."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_WARDEN:
+        raise UnauthorizedAccessError('Only warden can submit warden review decision.')
+
+    try:
+        request_obj = selectors.get_extended_stay_request_by_id(request_id=extended_stay_request_id)
+    except ExtendedStay.DoesNotExist:
+        raise ExtendedStayRequestNotFoundError('Extended stay request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Request does not belong to your hostel.')
+    if request_obj.status not in [ExtendedStayStatusChoices.PENDING, ExtendedStayStatusChoices.APPROVED]:
+        raise InvalidOperationError('Only pending/approved requests can be reviewed.')
+
+    decision_value, remarks_value = _apply_extended_stay_review_decision(decision=decision, remarks=remarks)
+    warden_faculty = selectors.get_faculty_by_extrainfo_id(user.extrainfo.id)
+
+    request_obj.warden_decision = decision_value
+    request_obj.warden_remarks = remarks_value
+    request_obj.warden_decided_by = warden_faculty
+    request_obj.warden_decided_at = timezone.now()
+
+    if decision_value == ReviewDecisionStatus.REJECTED:
+        request_obj.status = ExtendedStayStatusChoices.REJECTED
+    else:
+        request_obj.status = ExtendedStayStatusChoices.APPROVED
+
+    request_obj.save()
+
+    try:
+        from notification.views import hostel_notifications
+        notif_type = 'extendedStay_approved' if request_obj.status == ExtendedStayStatusChoices.APPROVED else 'extendedStay_rejected' if request_obj.status == ExtendedStayStatusChoices.REJECTED else 'extendedStay_reviewed'
+        hostel_notifications(sender=user, recipient=request_obj.requested_by, type=notif_type)
+    except Exception:
+        pass
+
+    return _serialize_extended_stay(request_obj)
+
+
+# ══════════════════════════════════════════════════════════════
+# ROOM VACATION SERVICES (UC-029/030/031)
+# ══════════════════════════════════════════════════════════════
+
+def _serialize_room_vacation_request(request_obj: RoomVacationRequest):
+    checklist_items = list(request_obj.checklist_items.all())
+    blocking_items = [item for item in checklist_items if item.is_blocking]
+    unresolved_blocking = [
+        item for item in blocking_items if item.status != ChecklistVerificationStatus.VERIFIED
+    ]
+
+    return {
+        'id': request_obj.id,
+        'hall_id': request_obj.hall.hall_id if request_obj.hall else None,
+        'hall_name': request_obj.hall.hall_name if request_obj.hall else None,
+        'student_username': request_obj.student.id.user.username if request_obj.student and request_obj.student.id and request_obj.student.id.user else None,
+        'student_name': request_obj.student.id.user.get_full_name() if request_obj.student and request_obj.student.id and request_obj.student.id.user else '',
+        'allocation_id': request_obj.allocation_id,
+        'room_label': (
+            f"{request_obj.allocation.room.block_no}-{request_obj.allocation.room.room_no}"
+            if request_obj.allocation and request_obj.allocation.room
+            else ''
+        ),
+        'intended_vacation_date': request_obj.intended_vacation_date.isoformat() if request_obj.intended_vacation_date else None,
+        'reason': request_obj.reason,
+        'status': request_obj.status,
+        'checklist_generated_at': request_obj.checklist_generated_at.isoformat() if request_obj.checklist_generated_at else None,
+        'checklist_acknowledged': request_obj.checklist_acknowledged,
+        'checklist_acknowledged_at': request_obj.checklist_acknowledged_at.isoformat() if request_obj.checklist_acknowledged_at else None,
+        'room_inspection_notes': request_obj.room_inspection_notes,
+        'room_damages_found': request_obj.room_damages_found,
+        'room_damage_description': request_obj.room_damage_description,
+        'room_damage_fine_amount': float(request_obj.room_damage_fine_amount or 0),
+        'caretaker_review_comments': request_obj.caretaker_review_comments,
+        'borrowed_items_notes': request_obj.borrowed_items_notes,
+        'behavior_notes': request_obj.behavior_notes,
+        'clearance_certificate_no': request_obj.clearance_certificate_no,
+        'clearance_approved_by': (
+            request_obj.clearance_approved_by.id.user.username
+            if request_obj.clearance_approved_by and request_obj.clearance_approved_by.id and request_obj.clearance_approved_by.id.user
+            else None
+        ),
+        'clearance_approved_at': request_obj.clearance_approved_at.isoformat() if request_obj.clearance_approved_at else None,
+        'finalized_by': request_obj.finalized_by.username if request_obj.finalized_by else None,
+        'finalized_at': request_obj.finalized_at.isoformat() if request_obj.finalized_at else None,
+        'completion_report': request_obj.completion_report or {},
+        'checklist': [
+            {
+                'id': item.id,
+                'code': item.code,
+                'title': item.title,
+                'details': item.details,
+                'is_blocking': item.is_blocking,
+                'status': item.status,
+                'caretaker_comment': item.caretaker_comment,
+                'metadata': item.metadata or {},
+            }
+            for item in checklist_items
+        ],
+        'checklist_summary': {
+            'total': len(checklist_items),
+            'blocking': len(blocking_items),
+            'unresolved_blocking': len(unresolved_blocking),
+        },
+        'created_at': request_obj.created_at.isoformat() if request_obj.created_at else None,
+        'updated_at': request_obj.updated_at.isoformat() if request_obj.updated_at else None,
+    }
+
+
+def _build_room_vacation_checklist(*, student, hall):
+    pending_fines = selectors.get_pending_fines_for_student_in_hall(student=student, hall=hall)
+    damage_fines = selectors.get_damage_fines_for_student_in_hall(student=student, hall=hall)
+    active_bookings = selectors.get_open_guest_bookings_by_student_and_hall(
+        user=student.id.user,
+        hall=hall,
+    )
+    checked_in_bookings = active_bookings.filter(status=BookingStatus.CHECKED_IN)
+    attendance_summary = selectors.get_attendance_summary_for_student(
+        student=student,
+        since_date=timezone.now().date() - timedelta(days=30),
+    )
+    attendance_issue = (
+        attendance_summary['total_days'] > 0 and attendance_summary['percentage'] < 75
+    )
+    open_complaints_count = selectors.count_open_complaints_for_student_in_hall(
+        student=student,
+        hall=hall,
+    )
+
+    total_pending_fine_amount = sum(Decimal(str(row.amount or 0)) for row in pending_fines)
+    total_damage_fine_amount = sum(Decimal(str(row.amount or 0)) for row in damage_fines)
+
+    return [
+        {
+            'code': 'outstanding_fines',
+            'title': 'Outstanding Fines',
+            'details': (
+                f"{pending_fines.count()} pending fine(s), total amount {total_pending_fine_amount}."
+                if pending_fines.exists()
+                else 'No outstanding fines found.'
+            ),
+            'is_blocking': pending_fines.exists(),
+            'metadata': {
+                'pending_fines_count': pending_fines.count(),
+                'pending_fines_amount': float(total_pending_fine_amount),
+            },
+        },
+        {
+            'code': 'room_damage_assessment',
+            'title': 'Pending Room Damage Assessments',
+            'details': (
+                f"{damage_fines.count()} pending damage fine(s), total amount {total_damage_fine_amount}."
+                if damage_fines.exists()
+                else 'No pending room damage assessments found.'
+            ),
+            'is_blocking': damage_fines.exists(),
+            'metadata': {
+                'damage_fines_count': damage_fines.count(),
+                'damage_fines_amount': float(total_damage_fine_amount),
+            },
+        },
+        {
+            'code': 'borrowed_items',
+            'title': 'Borrowed Items Not Returned',
+            'details': (
+                f"{checked_in_bookings.count()} active checked-in guest booking(s) indicate pending returns/closures."
+                if checked_in_bookings.exists()
+                else 'No active borrowed item indicators found.'
+            ),
+            'is_blocking': checked_in_bookings.exists(),
+            'metadata': {
+                'active_borrowed_booking_count': checked_in_bookings.count(),
+            },
+        },
+        {
+            'code': 'attendance_summary',
+            'title': 'Attendance Record Summary',
+            'details': (
+                f"Last 30 days: {attendance_summary['present_days']} present, {attendance_summary['absent_days']} absent, {attendance_summary['percentage']}% attendance."
+            ),
+            'is_blocking': attendance_issue,
+            'metadata': attendance_summary,
+        },
+        {
+            'code': 'behavior_records',
+            'title': 'Behavior and Discipline Records',
+            'details': (
+                f"{open_complaints_count} unresolved complaint/disciplinary record(s)."
+                if open_complaints_count > 0
+                else 'No unresolved behavior/disciplinary records found.'
+            ),
+            'is_blocking': False,
+            'metadata': {
+                'open_complaints_count': open_complaints_count,
+            },
+        },
+    ]
+
+
+def _store_room_vacation_checklist(*, request_obj, checklist_rows):
+    RoomVacationChecklistItem.objects.filter(request=request_obj).delete()
+
+    RoomVacationChecklistItem.objects.bulk_create(
+        [
+            RoomVacationChecklistItem(
+                request=request_obj,
+                code=row['code'],
+                title=row['title'],
+                details=row.get('details', ''),
+                is_blocking=bool(row.get('is_blocking', False)),
+                status=(
+                    ChecklistVerificationStatus.PENDING_ACTION
+                    if bool(row.get('is_blocking', False))
+                    else ChecklistVerificationStatus.PENDING
+                ),
+                metadata=row.get('metadata') or {},
+            )
+            for row in checklist_rows
+        ]
+    )
+
+
+def _get_super_admin_notification_recipients(*, exclude_user_id=None):
+    super_admin_ids = set(User.objects.filter(is_superuser=True).values_list('id', flat=True))
+    designated_super_admin_ids = HoldsDesignation.objects.filter(
+        designation__name__in=['super_admin', 'SuperAdmin']
+    ).values_list('working_id', flat=True)
+    super_admin_ids.update(set(designated_super_admin_ids))
+
+    qs = User.objects.filter(id__in=list(super_admin_ids))
+    if exclude_user_id:
+        qs = qs.exclude(id=exclude_user_id)
+    return list(qs)
+
+
+def _notify_room_vacation(*, sender, recipients, notif_type):
+    if not recipients:
+        return
+
+    try:
+        from notification.views import hostel_notifications
+
+        seen = set()
+        for recipient in recipients:
+            if not recipient or recipient.id in seen:
+                continue
+            seen.add(recipient.id)
+            hostel_notifications(sender=sender, recipient=recipient, type=notif_type)
+    except Exception:
+        pass
+
+
+def _build_room_vacation_completion_report(*, request_obj):
+    student = request_obj.student
+    hall = request_obj.hall
+    attendance_summary = selectors.get_attendance_summary_for_student(student=student)
+
+    room_allocations = [
+        {
+            'allocation_id': row.id,
+            'room': f"{row.room.block_no}-{row.room.room_no}" if row.room else None,
+            'status': row.status,
+            'assigned_at': row.assigned_at.isoformat() if row.assigned_at else None,
+            'vacated_at': row.vacated_at.isoformat() if row.vacated_at else None,
+        }
+        for row in StudentRoomAllocation.objects.filter(student=student).select_related('room').order_by('-assigned_at')[:20]
+    ]
+
+    fine_history = [
+        {
+            'fine_id': row.fine_id,
+            'amount': float(row.amount or 0),
+            'category': row.category,
+            'status': row.status,
+            'reason': row.reason,
+            'created_at': row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in HostelFine.objects.filter(student=student).order_by('-created_at')[:50]
+    ]
+
+    complaint_history = [
+        {
+            'complaint_id': row.id,
+            'title': row.title,
+            'status': row.status,
+            'created_at': row.created_at.isoformat() if row.created_at else None,
+            'resolved_at': row.resolved_at.isoformat() if row.resolved_at else None,
+        }
+        for row in HostelComplaint.objects.filter(student=student, hall=hall).order_by('-created_at')[:50]
+    ]
+
+    leave_history = [
+        {
+            'leave_id': row.id,
+            'start_date': row.start_date.isoformat() if row.start_date else None,
+            'end_date': row.end_date.isoformat() if row.end_date else None,
+            'status': row.status,
+            'reason': row.reason,
+        }
+        for row in HostelLeave.objects.filter(student=student, hall=hall).order_by('-start_date')[:50]
+    ]
+
+    guest_bookings = [
+        {
+            'booking_id': row.id,
+            'status': row.status,
+            'arrival_date': row.arrival_date.isoformat() if row.arrival_date else None,
+            'departure_date': row.departure_date.isoformat() if row.departure_date else None,
+            'checked_in_at': row.checked_in_at.isoformat() if row.checked_in_at else None,
+            'checked_out_at': row.checked_out_at.isoformat() if row.checked_out_at else None,
+        }
+        for row in GuestRoomBooking.objects.filter(intender=student.id.user, hall=hall).order_by('-booking_date')[:50]
+    ]
+
+    extended_stay_records = [
+        {
+            'request_id': row.id,
+            'start_date': row.start_date.isoformat() if row.start_date else None,
+            'end_date': row.end_date.isoformat() if row.end_date else None,
+            'status': row.status,
+            'created_at': row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in ExtendedStay.objects.filter(student=student, hall=hall).order_by('-created_at')[:50]
+    ]
+
+    return {
+        'generated_at': timezone.now().isoformat(),
+        'student': {
+            'username': student.id.user.username,
+            'full_name': (student.id.user.get_full_name() or student.id.user.username).strip(),
+            'hall_id': hall.hall_id if hall else None,
+        },
+        'room_allocation_history': room_allocations,
+        'fine_records': fine_history,
+        'complaint_records': complaint_history,
+        'attendance_summary': attendance_summary,
+        'leave_history': leave_history,
+        'guest_room_bookings': guest_bookings,
+        'extended_stay_records': extended_stay_records,
+    }
+
+
+def _validate_room_vacation_form(*, intended_vacation_date: date, reason: str):
+    if not intended_vacation_date:
+        raise InvalidOperationError('intended_vacation_date is required.')
+    if intended_vacation_date < timezone.now().date():
+        raise InvalidOperationError('intended_vacation_date cannot be in the past.')
+    if not (reason or '').strip():
+        raise InvalidOperationError('reason is required.')
+
+
+def generateRoomVacationChecklistService(*, user, intended_vacation_date: date, reason: str):
+    """Student previews generated room vacation clearance checklist."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can generate room vacation checklist.')
+
+    _validate_room_vacation_form(
+        intended_vacation_date=intended_vacation_date,
+        reason=reason,
+    )
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    active_allocation = selectors.get_student_room_allocation_active(student=student)
+    if not active_allocation:
+        raise InvalidOperationError('Active room allocation is required before requesting room vacation.')
+
+    checklist = _build_room_vacation_checklist(student=student, hall=mapping.hall)
+    return {
+        'student_username': student.id.user.username,
+        'student_name': (student.id.user.get_full_name() or student.id.user.username).strip(),
+        'hall_id': mapping.hall.hall_id,
+        'room_label': f"{active_allocation.room.block_no}-{active_allocation.room.room_no}" if active_allocation.room else '',
+        'intended_vacation_date': intended_vacation_date.isoformat(),
+        'reason': (reason or '').strip(),
+        'checklist': checklist,
+        'blocking_items_count': len([row for row in checklist if row.get('is_blocking')]),
+    }
+
+
+@transaction.atomic
+def submitRoomVacationRequestService(*, user, intended_vacation_date: date, reason: str, checklist_acknowledged: bool):
+    """Student submits room vacation request with generated checklist."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can submit room vacation requests.')
+
+    _validate_room_vacation_form(
+        intended_vacation_date=intended_vacation_date,
+        reason=reason,
+    )
+
+    if not checklist_acknowledged:
+        raise InvalidOperationError('Checklist acknowledgement is required before submission.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    active_allocation = selectors.get_student_room_allocation_active(student=student)
+    if not active_allocation:
+        raise InvalidOperationError('Active room allocation is required before requesting room vacation.')
+
+    existing_pending = selectors.get_pending_room_vacation_by_student(student=student)
+    if existing_pending:
+        raise InvalidOperationError('You already have a pending room vacation request.')
+
+    checklist = _build_room_vacation_checklist(student=student, hall=mapping.hall)
+
+    request_obj = RoomVacationRequest.objects.create(
+        hall=mapping.hall,
+        student=student,
+        requested_by=user,
+        allocation=active_allocation,
+        intended_vacation_date=intended_vacation_date,
+        reason=(reason or '').strip(),
+        status=VacationRequestStatusChoices.PENDING_CLEARANCE,
+        checklist_generated_at=timezone.now(),
+        checklist_acknowledged=True,
+        checklist_acknowledged_at=timezone.now(),
+    )
+    _store_room_vacation_checklist(request_obj=request_obj, checklist_rows=checklist)
+
+    recipients = []
+    caretaker = selectors.get_caretaker_by_hall(mapping.hall)
+    if caretaker and caretaker.staff and caretaker.staff.id and caretaker.staff.id.user:
+        recipients.append(caretaker.staff.id.user)
+    recipients.extend(_get_super_admin_notification_recipients(exclude_user_id=user.id))
+    _notify_room_vacation(sender=user, recipients=recipients, notif_type='roomVacation_request')
+
+    request_obj = selectors.get_room_vacation_request_by_id(request_id=request_obj.id)
+    return _serialize_room_vacation_request(request_obj)
+
+
+def getMyRoomVacationRequestsService(*, user):
+    """Student views own room vacation request history."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_STUDENT:
+        raise UnauthorizedAccessError('Only students can view their room vacation requests.')
+
+    student = selectors.get_student_by_extrainfo_or_none(user.extrainfo)
+    if not student:
+        raise StudentNotFoundError('Student profile not found for current user.')
+
+    requests = selectors.get_room_vacation_requests_by_student(student=student)
+    return [_serialize_room_vacation_request(item) for item in requests]
+
+
+def getRoomVacationRequestsForClearanceService(*, user, statuses=None):
+    """Caretaker views room vacation requests in own hall for clearance processing."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
+        raise UnauthorizedAccessError('Only caretaker can review room vacation clearance requests.')
+
+    normalized_statuses = statuses or [
+        VacationRequestStatusChoices.PENDING_CLEARANCE,
+        VacationRequestStatusChoices.CLEARANCE_PENDING_ACTION_REQUIRED,
+        VacationRequestStatusChoices.CLEARANCE_APPROVED,
+    ]
+    requests = selectors.get_room_vacation_requests_by_hall_and_status(
+        hall=mapping.hall,
+        statuses=normalized_statuses,
+    )
+    return [_serialize_room_vacation_request(item) for item in requests]
+
+
+@transaction.atomic
+def caretakerVerifyRoomVacationService(
+    *,
+    user,
+    request_id: int,
+    decision: str,
+    caretaker_review_comments: str = '',
+    room_inspection_notes: str = '',
+    room_damages_found: bool = False,
+    room_damage_description: str = '',
+    room_damage_fine_amount=0,
+    borrowed_items_notes: str = '',
+    behavior_notes: str = '',
+    checklist_updates=None,
+):
+    """Caretaker verifies checklist requirements and approves or requests corrections."""
+    mapping = resolve_user_hall_mapping_service(user=user, strict=True)
+    if mapping.role != UserHostelMapping.ROLE_CARETAKER:
+        raise UnauthorizedAccessError('Only caretaker can verify room vacation clearance requirements.')
+
+    try:
+        request_obj = selectors.get_room_vacation_request_by_id(request_id=request_id)
+    except RoomVacationRequest.DoesNotExist:
+        raise RoomVacationRequestNotFoundError('Room vacation request not found.')
+
+    if request_obj.hall_id != mapping.hall_id:
+        raise UnauthorizedAccessError('Room vacation request does not belong to your hostel.')
+
+    if request_obj.status not in [
+        VacationRequestStatusChoices.PENDING_CLEARANCE,
+        VacationRequestStatusChoices.CLEARANCE_PENDING_ACTION_REQUIRED,
+    ]:
+        raise InvalidOperationError('Only pending clearance requests can be reviewed.')
+
+    try:
+        damage_amount = Decimal(str(room_damage_fine_amount or 0))
+    except Exception:
+        raise InvalidOperationError('room_damage_fine_amount must be a valid number.')
+
+    request_obj.room_inspection_notes = (room_inspection_notes or '').strip()
+    request_obj.room_damages_found = bool(room_damages_found)
+    request_obj.room_damage_description = (room_damage_description or '').strip()
+    request_obj.room_damage_fine_amount = damage_amount if damage_amount > 0 else Decimal('0')
+    request_obj.caretaker_review_comments = (caretaker_review_comments or '').strip()
+    request_obj.borrowed_items_notes = (borrowed_items_notes or '').strip()
+    request_obj.behavior_notes = (behavior_notes or '').strip()
+
+    checklist_items = list(request_obj.checklist_items.all())
+    checklist_map = {item.code: item for item in checklist_items}
+
+    updates = checklist_updates or []
+    for row in updates:
+        code = (row.get('code') or '').strip()
+        if not code or code not in checklist_map:
+            continue
+
+        item = checklist_map[code]
+        status_value = (row.get('status') or item.status).strip()
+        if status_value not in [
+            ChecklistVerificationStatus.PENDING,
+            ChecklistVerificationStatus.VERIFIED,
+            ChecklistVerificationStatus.PENDING_ACTION,
+        ]:
+            raise InvalidOperationError(f'Invalid checklist status for {code}.')
+
+        item.status = status_value
+        item.caretaker_comment = (row.get('caretaker_comment') or row.get('comment') or '').strip()
+        if 'is_blocking' in row:
+            item.is_blocking = bool(row.get('is_blocking'))
+        item.save(update_fields=['status', 'caretaker_comment', 'is_blocking', 'updated_at'])
+
+    if request_obj.room_damages_found:
+        damage_item = checklist_map.get('room_damage_assessment')
+        if damage_item:
+            damage_item.is_blocking = True
+            damage_item.status = ChecklistVerificationStatus.PENDING_ACTION
+            if request_obj.room_damage_description:
+                damage_item.details = request_obj.room_damage_description
+            damage_item.save(update_fields=['is_blocking', 'status', 'details', 'updated_at'])
+
+        if damage_amount > 0:
+            caretaker_staff = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+            HostelFine.objects.create(
+                student=request_obj.student,
+                caretaker=caretaker_staff,
+                hall=request_obj.hall,
+                student_name=(request_obj.student.id.user.get_full_name() or request_obj.student.id.user.username).strip(),
+                amount=damage_amount,
+                category=FineCategory.DAMAGE,
+                status=FineStatus.PENDING,
+                reason=request_obj.room_damage_description or 'Room vacation inspection identified pending damages.',
+            )
+
+    decision_value = (decision or '').strip().lower()
+    if decision_value not in ['approve', 'request_corrections']:
+        raise InvalidOperationError('decision must be approve or request_corrections.')
+
+    blocking_pending = request_obj.checklist_items.filter(
+        is_blocking=True,
+    ).exclude(status=ChecklistVerificationStatus.VERIFIED).exists()
+
+    caretaking_staff = selectors.get_staff_by_extrainfo_id(user.extrainfo.id)
+    notif_type = 'roomVacation_corrections_required'
+    if decision_value == 'approve':
+        if blocking_pending:
+            raise InvalidOperationError('All blocking checklist items must be verified before clearance approval.')
+
+        request_obj.status = VacationRequestStatusChoices.CLEARANCE_APPROVED
+        request_obj.clearance_approved_by = caretaking_staff
+        request_obj.clearance_approved_at = timezone.now()
+        if not request_obj.clearance_certificate_no:
+            request_obj.clearance_certificate_no = (
+                f"CLR-{timezone.now().strftime('%Y%m%d')}-{request_obj.id:06d}"
+            )
+        notif_type = 'roomVacation_clearance_approved'
+    else:
+        request_obj.status = VacationRequestStatusChoices.CLEARANCE_PENDING_ACTION_REQUIRED
+
+    request_obj.save()
+
+    recipients = [request_obj.requested_by]
+    recipients.extend(_get_super_admin_notification_recipients(exclude_user_id=user.id))
+    _notify_room_vacation(sender=user, recipients=recipients, notif_type=notif_type)
+
+    request_obj = selectors.get_room_vacation_request_by_id(request_id=request_obj.id)
+    return _serialize_room_vacation_request(request_obj)
+
+
+def getRoomVacationRequestsForFinalizationService(*, user, statuses=None, hall_id: str = None):
+    """Super admin views vacation requests ready for finalization."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin':
+        raise UnauthorizedAccessError('Only super admin can access room vacation finalization dashboard.')
+
+    normalized_statuses = statuses or [
+        VacationRequestStatusChoices.CLEARANCE_APPROVED,
+        VacationRequestStatusChoices.COMPLETED,
+    ]
+    requests = selectors.get_room_vacation_requests_by_status(statuses=normalized_statuses)
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    requests = requests.filter(hall_id=hall.id)
+    return [_serialize_room_vacation_request(item) for item in requests]
+
+
+@transaction.atomic
+def finalizeRoomVacationService(*, user, request_id: int, confirm: bool, hall_id: str = None):
+    """Super admin finalizes room vacation by deallocation and archival."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin':
+        raise UnauthorizedAccessError('Only super admin can finalize room vacation.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+
+    if not confirm:
+        raise InvalidOperationError('Finalization confirmation is required.')
+
+    try:
+        request_obj = selectors.get_room_vacation_request_by_id(request_id=request_id)
+    except RoomVacationRequest.DoesNotExist:
+        raise RoomVacationRequestNotFoundError('Room vacation request not found.')
+
+    if request_obj.hall_id != hall.id:
+        raise UnauthorizedAccessError('Selected request does not belong to the specified hall.')
+
+    if request_obj.status != VacationRequestStatusChoices.CLEARANCE_APPROVED:
+        raise InvalidOperationError('Only clearance approved requests can be finalized.')
+
+    allocation = request_obj.allocation or selectors.get_student_room_allocation_active(student=request_obj.student)
+    if not allocation:
+        raise InvalidOperationError('No active room allocation found for the student.')
+    if allocation.status != RoomAllocationStatus.ACTIVE:
+        raise InvalidOperationError('Student allocation is already vacated.')
+
+    room = allocation.room
+    if room and room.room_occupied > 0:
+        room.room_occupied = room.room_occupied - 1
+        room.save(update_fields=['room_occupied'])
+
+    allocation.status = RoomAllocationStatus.VACATED
+    allocation.vacated_at = timezone.now()
+    allocation.save(update_fields=['status', 'vacated_at'])
+
+    student = request_obj.student
+    student.room_no = ''
+    student.hall_no = 0
+    student.save(update_fields=['room_no', 'hall_no'])
+
+    student_details = selectors.get_student_details_by_id_or_none(student.id.user.username)
+    if student_details:
+        student_details.room_num = ''
+        student_details.hall_id = ''
+        student_details.hall_no = ''
+        student_details.save(update_fields=['room_num', 'hall_id', 'hall_no'])
+
+    active_allocations_count = StudentRoomAllocation.objects.filter(
+        hall=request_obj.hall,
+        status=RoomAllocationStatus.ACTIVE,
+    ).count()
+    request_obj.hall.number_students = active_allocations_count
+    request_obj.hall.save(update_fields=['number_students'])
+
+    request_obj.status = VacationRequestStatusChoices.COMPLETED
+    request_obj.finalized_by = user
+    request_obj.finalized_at = timezone.now()
+    request_obj.completion_report = _build_room_vacation_completion_report(request_obj=request_obj)
+    request_obj.save()
+
+    HostelTransactionHistory.objects.create(
+        hall=request_obj.hall,
+        change_type='RoomVacationCompleted',
+        previous_value='Clearance Approved',
+        new_value=f"Completed for {student.id.user.username} by {user.username}",
+    )
+
+    _notify_room_vacation(
+        sender=user,
+        recipients=[request_obj.requested_by],
+        notif_type='roomVacation_completed',
+    )
+
+    request_obj = selectors.get_room_vacation_request_by_id(request_id=request_obj.id)
+    return _serialize_room_vacation_request(request_obj)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3144,12 +4549,14 @@ def _serialize_inventory_item(item):
     }
 
 
-def getInventoryDashboardService(*, user):
+def getInventoryDashboardService(*, user, hall_id: str = None):
     """Return inventory list for authenticated hall (caretaker/warden) or all halls (superuser/admin)."""
-    if user.is_superuser:
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
         inventory = [
             item for item in selectors.get_all_inventory()
-            if item.hall and item.hall.operational_status == HostelOperationalStatus.ACTIVE
+            if item.hall and item.hall.id == hall.id and item.hall.operational_status == HostelOperationalStatus.ACTIVE
         ]
         return [_serialize_inventory_item(item) for item in inventory]
 
@@ -3220,16 +4627,13 @@ def submitInventoryInspectionService(*, user, items, remarks: str = ''):
     }
 
 
-def getInventoryInspectionsService(*, user):
+def getInventoryInspectionsService(*, user, hall_id: str = None):
     """Get inspections for current hall (caretaker/warden) or all halls for superuser."""
-    if user.is_superuser:
-        # Aggregate all hall inspections by reading per hall inventory relation
-        payload = []
-        for hall in selectors.get_all_halls():
-            inspections = selectors.get_inventory_inspections_by_hall(hall=hall)
-            for inspection in inspections:
-                payload.append(_serialize_inventory_inspection(inspection))
-        return payload
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        inspections = selectors.get_inventory_inspections_by_hall(hall=hall)
+        return [_serialize_inventory_inspection(inspection) for inspection in inspections]
 
     mapping = _ensure_inventory_role_access(
         user=user,
@@ -3357,10 +4761,12 @@ def _serialize_resource_request(resource_request):
     }
 
 
-def getResourceRequestsService(*, user):
+def getResourceRequestsService(*, user, hall_id: str = None):
     """Caretaker sees own-hall requests; warden sees hall requests; superuser sees all."""
-    if user.is_superuser:
-        return [_serialize_resource_request(req) for req in selectors.get_all_resource_requests()]
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        return [_serialize_resource_request(req) for req in selectors.get_resource_requests_by_hall(hall=hall)]
 
     mapping = _ensure_inventory_role_access(
         user=user,
@@ -3371,7 +4777,7 @@ def getResourceRequestsService(*, user):
 
 
 @transaction.atomic
-def reviewResourceRequestService(*, user, request_id: int, decision: str, remarks: str = ''):
+def reviewResourceRequestService(*, user, request_id: int, decision: str, remarks: str = '', hall_id: str = None):
     """Warden/admin approves or rejects resource request."""
     try:
         resource_request = selectors.get_resource_request_by_id(request_id)
@@ -3384,7 +4790,11 @@ def reviewResourceRequestService(*, user, request_id: int, decision: str, remark
     if normalized_decision == WorkflowStatus.REJECTED and not (remarks or '').strip():
         raise InvalidOperationError('remarks are required when rejecting a request.')
 
-    if user.is_superuser:
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        if resource_request.hall_id != hall.id:
+            raise UnauthorizedAccessError('Resource request does not belong to the specified hall.')
         resource_request.reviewed_by_admin = user
     else:
         mapping = _ensure_inventory_role_access(
@@ -3465,12 +4875,13 @@ def auditedInventoryUpdateService(*, user, inventory_id: int, quantity=None, con
     return _serialize_inventory_item(inventory)
 
 
-def getInventoryUpdateLogsService(*, user):
+def getInventoryUpdateLogsService(*, user, hall_id: str = None):
     """Return inventory update logs for hall scope or all (superuser)."""
     logs = []
-    if user.is_superuser:
-        for hall in selectors.get_all_halls():
-            logs.extend(list(selectors.get_inventory_update_logs_by_hall(hall=hall)))
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        logs = selectors.get_inventory_update_logs_by_hall(hall=hall)
     else:
         mapping = _ensure_inventory_role_access(
             user=user,
@@ -3529,6 +4940,740 @@ def createInventoryItemForCaretakerService(*, user, inventory_name: str, cost, q
         condition_status=normalized_condition,
     )
     return _serialize_inventory_item(inventory)
+
+
+# ══════════════════════════════════════════════════════════════
+# HOSTEL REPORT SERVICES (UC-034/UC-035)
+# ══════════════════════════════════════════════════════════════
+
+def _log_report_action(*, report, actor, action: str, metadata=None):
+    HostelReportAuditLog.objects.create(
+        report=report,
+        actor=actor,
+        action=action,
+        metadata=metadata or {},
+    )
+
+
+def _resolve_report_scope(*, user, hall_id=None):
+    role, mapping = resolve_hostel_rbac_role_service(user=user)
+    if role not in ['caretaker', 'warden', 'super_admin']:
+        raise UnauthorizedAccessError('Only caretaker, warden, or super admin can access report features.')
+
+    if role == 'super_admin':
+        if hall_id:
+            hall = selectors.get_hall_by_hall_id_or_none(hall_id)
+            if not hall:
+                raise HallNotFoundError('Selected hostel does not exist.')
+            return role, hall
+        raise HostelReportValidationError('hall_id is required for super admin report generation.')
+
+    if not mapping or not mapping.hall:
+        raise UserHallMappingMissingError('You must be assigned to a hostel to generate reports.')
+
+    if hall_id and mapping.hall.hall_id != hall_id:
+        raise UnauthorizedAccessError('You can generate reports only for your assigned hostel.')
+
+    return role, mapping.hall
+
+
+def _normalize_report_filters(filters):
+    normalized = filters or {}
+
+    def _coerce_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(',') if item.strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
+    return {
+        'students': _coerce_list(normalized.get('students') or normalized.get('student_ids')),
+        'room_blocks': _coerce_list(normalized.get('room_blocks') or normalized.get('blocks')),
+        'room_numbers': _coerce_list(normalized.get('room_numbers') or normalized.get('rooms')),
+        'statuses': _coerce_list(normalized.get('statuses') or normalized.get('status_filters')),
+    }
+
+
+def _ensure_report_params(*, report_type, start_date: date, end_date: date):
+    valid_types = [choice.value for choice in HostelReportTypeChoices]
+    if report_type not in valid_types:
+        raise HostelReportValidationError('Invalid report_type selected.')
+    if not start_date or not end_date:
+        raise HostelReportValidationError('start_date and end_date are required.')
+    if end_date < start_date:
+        raise HostelReportValidationError('end_date cannot be earlier than start_date.')
+
+
+def _serialize_hostel_report(report):
+    attachments = [
+        {
+            'id': row.id,
+            'file_name': row.file.name.split('/')[-1],
+            'file_url': row.file.url if row.file else None,
+            'uploaded_by': row.uploaded_by.username if row.uploaded_by else None,
+            'uploaded_at': row.uploaded_at.isoformat() if row.uploaded_at else None,
+        }
+        for row in report.attachments.all()
+    ]
+
+    return {
+        'id': report.id,
+        'report_uid': report.report_uid,
+        'hall_id': report.hall.hall_id if report.hall else None,
+        'hall_name': report.hall.hall_name if report.hall else None,
+        'created_by': report.created_by.username if report.created_by else None,
+        'creator_role': report.creator_role,
+        'report_type': report.report_type,
+        'title': report.title,
+        'start_date': report.start_date.isoformat() if report.start_date else None,
+        'end_date': report.end_date.isoformat() if report.end_date else None,
+        'filters': report.filters or {},
+        'report_data': report.report_data or {},
+        'status': report.status,
+        'priority': report.priority,
+        'submission_notes': report.submission_notes,
+        'submitted_at': report.submitted_at.isoformat() if report.submitted_at else None,
+        'reviewed_by': report.reviewed_by.username if report.reviewed_by else None,
+        'reviewed_at': report.reviewed_at.isoformat() if report.reviewed_at else None,
+        'review_feedback': report.review_feedback,
+        'attachments': attachments,
+        'created_at': report.created_at.isoformat() if report.created_at else None,
+        'updated_at': report.updated_at.isoformat() if report.updated_at else None,
+    }
+
+
+def _filter_students_by_username(*, students_qs, usernames):
+    if not usernames:
+        return students_qs
+    return students_qs.filter(id__user__username__in=usernames)
+
+
+def _build_room_occupancy_section(*, hall, filters):
+    rooms = selectors.get_rooms_by_hall(hall)
+    blocks = filters.get('room_blocks') or []
+    room_numbers = filters.get('room_numbers') or []
+    if blocks:
+        rooms = rooms.filter(block_no__in=blocks)
+    if room_numbers:
+        rooms = rooms.filter(room_no__in=room_numbers)
+
+    rows = []
+    total_capacity = 0
+    total_occupied = 0
+    for room in rooms:
+        total_capacity += int(room.room_cap or 0)
+        total_occupied += int(room.room_occupied or 0)
+        rows.append(
+            {
+                'room': f"{room.block_no}-{room.room_no}",
+                'capacity': int(room.room_cap or 0),
+                'occupied': int(room.room_occupied or 0),
+                'vacant': max(int(room.room_cap or 0) - int(room.room_occupied or 0), 0),
+            }
+        )
+
+    occupancy_pct = round((total_occupied * 100.0 / total_capacity), 2) if total_capacity else 0
+    return {
+        'key': 'room_occupancy',
+        'title': 'Room Occupancy Report',
+        'summary': {
+            'rooms': len(rows),
+            'total_capacity': total_capacity,
+            'total_occupied': total_occupied,
+            'occupancy_percentage': occupancy_pct,
+        },
+        'chart': {
+            'type': 'pie',
+            'labels': ['Occupied', 'Vacant'],
+            'values': [total_occupied, max(total_capacity - total_occupied, 0)],
+        },
+        'rows': rows,
+    }
+
+
+def _build_attendance_summary_section(*, hall, start_date, end_date, filters):
+    attendance_qs = selectors.get_attendance_by_hall(hall).filter(date__range=[start_date, end_date])
+    students_filter = filters.get('students') or []
+    if students_filter:
+        attendance_qs = attendance_qs.filter(student_id__id__user__username__in=students_filter)
+
+    statuses = [item.lower() for item in (filters.get('statuses') or [])]
+    if statuses:
+        attendance_qs = attendance_qs.filter(status__in=statuses)
+
+    total = attendance_qs.count()
+    present = attendance_qs.filter(status=AttendanceStatus.PRESENT).count()
+    absent = total - present
+
+    return {
+        'key': 'attendance_summary',
+        'title': 'Attendance Summary Report',
+        'summary': {
+            'total_entries': total,
+            'present_entries': present,
+            'absent_entries': absent,
+            'attendance_percentage': round((present * 100.0 / total), 2) if total else 0,
+        },
+        'chart': {
+            'type': 'bar',
+            'labels': ['Present', 'Absent'],
+            'values': [present, absent],
+        },
+        'rows': [
+            {
+                'metric': 'Present',
+                'value': present,
+            },
+            {
+                'metric': 'Absent',
+                'value': absent,
+            },
+        ],
+    }
+
+
+def _build_leave_analysis_section(*, hall, start_date, end_date, filters):
+    leaves = selectors.get_leaves_by_hall(hall=hall).filter(start_date__gte=start_date, start_date__lte=end_date)
+    students_filter = filters.get('students') or []
+    if students_filter:
+        leaves = leaves.filter(roll_num__in=students_filter)
+
+    statuses = filters.get('statuses') or []
+    if statuses:
+        leaves = leaves.filter(status__in=statuses)
+
+    total = leaves.count()
+    approved = leaves.filter(status__iexact=LeaveStatus.APPROVED).count()
+    rejected = leaves.filter(status__iexact=LeaveStatus.REJECTED).count()
+    pending = leaves.filter(status__iexact=LeaveStatus.PENDING).count()
+
+    return {
+        'key': 'leave_analysis',
+        'title': 'Leave Analysis Report',
+        'summary': {
+            'total_requests': total,
+            'approved': approved,
+            'rejected': rejected,
+            'pending': pending,
+        },
+        'chart': {
+            'type': 'pie',
+            'labels': ['Approved', 'Rejected', 'Pending'],
+            'values': [approved, rejected, pending],
+        },
+        'rows': [
+            {
+                'metric': 'Approved',
+                'value': approved,
+            },
+            {
+                'metric': 'Rejected',
+                'value': rejected,
+            },
+            {
+                'metric': 'Pending',
+                'value': pending,
+            },
+        ],
+    }
+
+
+def _build_fine_disciplinary_section(*, hall, start_date, end_date, filters):
+    fines = selectors.get_hostel_fines(hall=hall).filter(created_at__date__range=[start_date, end_date])
+    students_filter = filters.get('students') or []
+    if students_filter:
+        fines = fines.filter(student__id__user__username__in=students_filter)
+
+    statuses = filters.get('statuses') or []
+    if statuses:
+        fines = fines.filter(status__in=statuses)
+
+    total_fines = fines.count()
+    pending_fines = fines.filter(status=FineStatus.PENDING).count()
+    paid_fines = fines.filter(status=FineStatus.PAID).count()
+    total_amount = sum(Decimal(str(item.amount or 0)) for item in fines)
+
+    complaints = selectors.get_complaints_by_hall(hall).filter(created_at__date__range=[start_date, end_date])
+    open_complaints = complaints.filter(status__in=[ComplaintStatus.PENDING, ComplaintStatus.IN_PROGRESS, ComplaintStatus.ESCALATED]).count()
+
+    return {
+        'key': 'fine_disciplinary',
+        'title': 'Fine and Disciplinary Report',
+        'summary': {
+            'total_fines': total_fines,
+            'pending_fines': pending_fines,
+            'paid_fines': paid_fines,
+            'total_fine_amount': float(total_amount),
+            'open_complaints': open_complaints,
+        },
+        'chart': {
+            'type': 'bar',
+            'labels': ['Pending Fines', 'Paid Fines', 'Open Complaints'],
+            'values': [pending_fines, paid_fines, open_complaints],
+        },
+        'rows': [
+            {
+                'metric': 'Total Fine Amount',
+                'value': float(total_amount),
+            },
+            {
+                'metric': 'Pending Fine Count',
+                'value': pending_fines,
+            },
+            {
+                'metric': 'Open Complaint Count',
+                'value': open_complaints,
+            },
+        ],
+    }
+
+
+def _build_complaint_resolution_section(*, hall, start_date, end_date, filters):
+    complaints = selectors.get_complaints_by_hall(hall).filter(created_at__date__range=[start_date, end_date])
+    students_filter = filters.get('students') or []
+    if students_filter:
+        complaints = complaints.filter(student__id__user__username__in=students_filter)
+
+    statuses = filters.get('statuses') or []
+    if statuses:
+        complaints = complaints.filter(status__in=statuses)
+
+    total = complaints.count()
+    resolved = complaints.filter(status=ComplaintStatus.RESOLVED).count()
+    escalated = complaints.filter(status=ComplaintStatus.ESCALATED).count()
+    in_progress = complaints.filter(status=ComplaintStatus.IN_PROGRESS).count()
+
+    return {
+        'key': 'complaint_resolution',
+        'title': 'Complaint Resolution Report',
+        'summary': {
+            'total_complaints': total,
+            'resolved': resolved,
+            'escalated': escalated,
+            'in_progress': in_progress,
+        },
+        'chart': {
+            'type': 'pie',
+            'labels': ['Resolved', 'Escalated', 'In Progress'],
+            'values': [resolved, escalated, in_progress],
+        },
+        'rows': [
+            {
+                'metric': 'Resolved Rate %',
+                'value': round((resolved * 100.0 / total), 2) if total else 0,
+            },
+            {
+                'metric': 'Escalated Count',
+                'value': escalated,
+            },
+        ],
+    }
+
+
+def _build_guest_room_booking_section(*, hall, start_date, end_date, filters):
+    bookings = selectors.get_bookings_by_hall(hall=hall).filter(booking_date__range=[start_date, end_date])
+    students_filter = filters.get('students') or []
+    if students_filter:
+        bookings = bookings.filter(intender__username__in=students_filter)
+
+    statuses = filters.get('statuses') or []
+    if statuses:
+        bookings = bookings.filter(status__in=statuses)
+
+    total = bookings.count()
+    approved = bookings.filter(status__in=[BookingStatus.APPROVED, BookingStatus.CONFIRMED]).count()
+    rejected = bookings.filter(status=BookingStatus.REJECTED).count()
+    pending = bookings.filter(status=BookingStatus.PENDING).count()
+
+    return {
+        'key': 'guest_room_booking',
+        'title': 'Guest Room Booking Report',
+        'summary': {
+            'total_bookings': total,
+            'approved_or_confirmed': approved,
+            'rejected': rejected,
+            'pending': pending,
+        },
+        'chart': {
+            'type': 'bar',
+            'labels': ['Approved/Confirmed', 'Rejected', 'Pending'],
+            'values': [approved, rejected, pending],
+        },
+        'rows': [
+            {
+                'metric': 'Total Bookings',
+                'value': total,
+            },
+            {
+                'metric': 'Pending Bookings',
+                'value': pending,
+            },
+        ],
+    }
+
+
+def _build_extended_stay_section(*, hall, start_date, end_date, filters):
+    requests = selectors.get_extended_stay_requests_by_hall_and_status(hall=hall, statuses=None).filter(created_at__date__range=[start_date, end_date])
+    students_filter = filters.get('students') or []
+    if students_filter:
+        requests = requests.filter(student__id__user__username__in=students_filter)
+
+    statuses = filters.get('statuses') or []
+    if statuses:
+        requests = requests.filter(status__in=statuses)
+
+    total = requests.count()
+    approved = requests.filter(status=ExtendedStayStatusChoices.APPROVED).count()
+    rejected = requests.filter(status=ExtendedStayStatusChoices.REJECTED).count()
+    pending = requests.filter(status=ExtendedStayStatusChoices.PENDING).count()
+
+    return {
+        'key': 'extended_stay',
+        'title': 'Extended Stay Report',
+        'summary': {
+            'total_requests': total,
+            'approved': approved,
+            'rejected': rejected,
+            'pending': pending,
+        },
+        'chart': {
+            'type': 'pie',
+            'labels': ['Approved', 'Rejected', 'Pending'],
+            'values': [approved, rejected, pending],
+        },
+        'rows': [
+            {
+                'metric': 'Total Requests',
+                'value': total,
+            },
+            {
+                'metric': 'Approval Rate %',
+                'value': round((approved * 100.0 / total), 2) if total else 0,
+            },
+        ],
+    }
+
+
+def _generate_report_sections(*, report_type, hall, start_date, end_date, filters):
+    builders = {
+        HostelReportTypeChoices.ROOM_OCCUPANCY: lambda: [_build_room_occupancy_section(hall=hall, filters=filters)],
+        HostelReportTypeChoices.ATTENDANCE_SUMMARY: lambda: [_build_attendance_summary_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters)],
+        HostelReportTypeChoices.LEAVE_ANALYSIS: lambda: [_build_leave_analysis_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters)],
+        HostelReportTypeChoices.FINE_DISCIPLINARY: lambda: [_build_fine_disciplinary_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters)],
+        HostelReportTypeChoices.COMPLAINT_RESOLUTION: lambda: [_build_complaint_resolution_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters)],
+        HostelReportTypeChoices.GUEST_ROOM_BOOKING: lambda: [_build_guest_room_booking_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters)],
+        HostelReportTypeChoices.EXTENDED_STAY: lambda: [_build_extended_stay_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters)],
+        HostelReportTypeChoices.COMPREHENSIVE: lambda: [
+            _build_room_occupancy_section(hall=hall, filters=filters),
+            _build_attendance_summary_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters),
+            _build_leave_analysis_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters),
+            _build_fine_disciplinary_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters),
+            _build_complaint_resolution_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters),
+            _build_guest_room_booking_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters),
+            _build_extended_stay_section(hall=hall, start_date=start_date, end_date=end_date, filters=filters),
+        ],
+    }
+
+    sections = builders[report_type]()
+    key_insights = []
+    for section in sections:
+        summary = section.get('summary') or {}
+        if section['key'] == 'room_occupancy':
+            key_insights.append(
+                f"Hostel occupancy is {summary.get('occupancy_percentage', 0)}% for selected filters."
+            )
+        if section['key'] == 'attendance_summary':
+            key_insights.append(
+                f"Attendance percentage is {summary.get('attendance_percentage', 0)}% in selected period."
+            )
+
+    return {
+        'generated_at': timezone.now().isoformat(),
+        'sections': sections,
+        'key_insights': key_insights,
+    }
+
+
+def generateHostelReportService(
+    *,
+    user,
+    report_type: str,
+    start_date: date,
+    end_date: date,
+    filters=None,
+    title: str = '',
+    hall_id: str = None,
+    template_id=None,
+):
+    """Generate hostel report by type with date range and filters."""
+    _ensure_report_params(report_type=report_type, start_date=start_date, end_date=end_date)
+    creator_role, hall = _resolve_report_scope(user=user, hall_id=hall_id)
+
+    normalized_filters = _normalize_report_filters(filters)
+    if template_id:
+        template = selectors.get_template_by_id_for_owner(template_id=int(template_id), owner=user)
+        normalized_filters = _normalize_report_filters(template.template_filters)
+
+    report_payload = _generate_report_sections(
+        report_type=report_type,
+        hall=hall,
+        start_date=start_date,
+        end_date=end_date,
+        filters=normalized_filters,
+    )
+
+    report = HostelGeneratedReport.objects.create(
+        hall=hall,
+        created_by=user,
+        creator_role=creator_role,
+        report_type=report_type,
+        title=(title or HostelReportTypeChoices(report_type).label).strip(),
+        start_date=start_date,
+        end_date=end_date,
+        filters=normalized_filters,
+        report_data=report_payload,
+        status=HostelReportStatusChoices.DRAFT,
+    )
+    _log_report_action(
+        report=report,
+        actor=user,
+        action='generated',
+        metadata={
+            'report_type': report_type,
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+        },
+    )
+
+    report = selectors.get_report_by_id(report_id=report.id)
+    return _serialize_hostel_report(report)
+
+
+def listMyHostelReportsService(*, user):
+    """List report history for the current user."""
+    reports = selectors.get_reports_by_creator(user=user)
+    return [_serialize_hostel_report(report) for report in reports]
+
+
+@transaction.atomic
+def saveReportFilterTemplateService(*, user, template_name: str, report_type: str, filters=None):
+    """Save reusable filter template for report generation."""
+    role, hall = _resolve_report_scope(user=user)
+    if role not in ['caretaker', 'warden']:
+        raise UnauthorizedAccessError('Only caretaker or warden can save report templates.')
+
+    if report_type not in [choice.value for choice in HostelReportTypeChoices]:
+        raise HostelReportValidationError('Invalid report_type for template.')
+
+    name = (template_name or '').strip()
+    if not name:
+        raise HostelReportValidationError('template_name is required.')
+
+    normalized_filters = _normalize_report_filters(filters)
+    template, _ = HostelReportFilterTemplate.objects.update_or_create(
+        owner=user,
+        hall=hall,
+        template_name=name,
+        report_type=report_type,
+        defaults={'template_filters': normalized_filters},
+    )
+    return {
+        'id': template.id,
+        'template_name': template.template_name,
+        'report_type': template.report_type,
+        'filters': template.template_filters,
+        'updated_at': template.updated_at.isoformat() if template.updated_at else None,
+    }
+
+
+def listReportFilterTemplatesService(*, user, report_type=None):
+    """List saved report filter templates."""
+    role, hall = _resolve_report_scope(user=user)
+    if role not in ['caretaker', 'warden']:
+        raise UnauthorizedAccessError('Only caretaker or warden can load report templates.')
+
+    templates = selectors.get_templates_by_owner_and_hall(owner=user, hall=hall, report_type=report_type)
+    return [
+        {
+            'id': row.id,
+            'template_name': row.template_name,
+            'report_type': row.report_type,
+            'filters': row.template_filters,
+            'updated_at': row.updated_at.isoformat() if row.updated_at else None,
+        }
+        for row in templates
+    ]
+
+
+@transaction.atomic
+def submitHostelReportToSuperAdminService(*, user, report_id: int, submission_notes: str = '', priority: str = 'Normal', supporting_documents=None):
+    """Warden submits generated report to super admin for review."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'warden':
+        raise UnauthorizedAccessError('Only warden can submit reports to super admin.')
+
+    try:
+        report = selectors.get_report_by_id(report_id=report_id)
+    except HostelGeneratedReport.DoesNotExist:
+        raise HostelReportNotFoundError('Report not found.')
+
+    if report.created_by_id != user.id:
+        raise UnauthorizedAccessError('You can submit only reports you created.')
+
+    if report.status not in [HostelReportStatusChoices.DRAFT, HostelReportStatusChoices.NEEDS_REVISION]:
+        raise InvalidOperationError('Only draft/needs revision reports can be submitted.')
+
+    if priority not in [choice.value for choice in HostelReportPriorityChoices]:
+        raise HostelReportValidationError('Invalid priority selected.')
+
+    report.submission_notes = (submission_notes or '').strip()
+    report.priority = priority
+    report.status = HostelReportStatusChoices.SUBMITTED
+    report.submitted_at = timezone.now()
+    report.save(update_fields=['submission_notes', 'priority', 'status', 'submitted_at', 'updated_at'])
+
+    files = supporting_documents or []
+    for file_obj in files:
+        HostelReportAttachment.objects.create(
+            report=report,
+            uploaded_by=user,
+            file=file_obj,
+        )
+
+    _log_report_action(
+        report=report,
+        actor=user,
+        action='submitted',
+        metadata={'priority': priority},
+    )
+
+    recipients = _get_super_admin_notification_recipients(exclude_user_id=user.id)
+    _notify_room_vacation(sender=user, recipients=recipients, notif_type='report_submitted_superadmin')
+
+    report = selectors.get_report_by_id(report_id=report.id)
+    return _serialize_hostel_report(report)
+
+
+def listSubmittedHostelReportsService(*, user, statuses=None, hall_id: str = None):
+    """Super admin list of submitted/reviewed reports."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin':
+        raise UnauthorizedAccessError('Only super admin can review submitted reports.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    reports = selectors.get_submitted_reports()
+    reports = reports.filter(hall_id=hall.id)
+    if statuses:
+        reports = reports.filter(status__in=statuses)
+    return [_serialize_hostel_report(report) for report in reports]
+
+
+def getHostelReportDetailService(*, user, report_id: int, log_view=True, hall_id: str = None):
+    """Get report detail if user is creator or super admin."""
+    try:
+        report = selectors.get_report_by_id(report_id=report_id)
+    except HostelGeneratedReport.DoesNotExist:
+        raise HostelReportNotFoundError('Report not found.')
+
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin' and report.created_by_id != user.id:
+        raise UnauthorizedAccessError('You are not authorized to view this report.')
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        if report.hall_id != hall.id:
+            raise UnauthorizedAccessError('Report does not belong to the specified hall.')
+
+    if log_view:
+        _log_report_action(
+            report=report,
+            actor=user,
+            action='viewed',
+            metadata={'status': report.status},
+        )
+
+    return _serialize_hostel_report(report)
+
+
+@transaction.atomic
+def reviewSubmittedHostelReportService(*, user, report_id: int, decision: str, feedback: str = '', hall_id: str = None):
+    """Super admin reviews submitted report and provides feedback/decision."""
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin':
+        raise UnauthorizedAccessError('Only super admin can review submitted reports.')
+
+    try:
+        report = selectors.get_report_by_id(report_id=report_id)
+    except HostelGeneratedReport.DoesNotExist:
+        raise HostelReportNotFoundError('Report not found.')
+
+    hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+    if report.hall_id != hall.id:
+        raise UnauthorizedAccessError('Report does not belong to the specified hall.')
+
+    if report.status not in [HostelReportStatusChoices.SUBMITTED, HostelReportStatusChoices.REVIEWED]:
+        raise InvalidOperationError('Only submitted reports can be reviewed.')
+
+    normalized_decision = (decision or '').strip().lower()
+    if normalized_decision not in ['approved', 'needs_revision']:
+        raise HostelReportValidationError('decision must be approved or needs_revision.')
+
+    report.reviewed_by = user
+    report.reviewed_at = timezone.now()
+    report.review_feedback = (feedback or '').strip()
+    report.status = (
+        HostelReportStatusChoices.APPROVED
+        if normalized_decision == 'approved'
+        else HostelReportStatusChoices.NEEDS_REVISION
+    )
+    report.save(update_fields=['reviewed_by', 'reviewed_at', 'review_feedback', 'status', 'updated_at'])
+
+    _log_report_action(
+        report=report,
+        actor=user,
+        action='reviewed',
+        metadata={'decision': normalized_decision},
+    )
+
+    feedback_notif_type = (
+        'report_feedback_approved'
+        if normalized_decision == 'approved'
+        else 'report_feedback_revision_requested'
+    )
+    _notify_room_vacation(
+        sender=user,
+        recipients=[report.created_by],
+        notif_type=feedback_notif_type,
+    )
+
+    report = selectors.get_report_by_id(report_id=report.id)
+    return _serialize_hostel_report(report)
+
+
+def logHostelReportDownloadService(*, user, report_id: int, download_format: str, hall_id: str = None):
+    """Log report download activity for audit trail."""
+    try:
+        report = selectors.get_report_by_id(report_id=report_id)
+    except HostelGeneratedReport.DoesNotExist:
+        raise HostelReportNotFoundError('Report not found.')
+
+    role, _ = resolve_hostel_rbac_role_service(user=user)
+    if role != 'super_admin' and report.created_by_id != user.id:
+        raise UnauthorizedAccessError('You are not authorized to download this report.')
+    if role == 'super_admin':
+        hall = _get_required_hall_for_super_admin(hall_id=hall_id)
+        if report.hall_id != hall.id:
+            raise UnauthorizedAccessError('Report does not belong to the specified hall.')
+
+    _log_report_action(
+        report=report,
+        actor=user,
+        action='downloaded',
+        metadata={'format': download_format},
+    )
+    return _serialize_hostel_report(report)
 
 
 # ══════════════════════════════════════════════════════════════

@@ -1,0 +1,80 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+*env/
+
+# Environment variables
+.env
+.env.*
+
+# Database
+db.sqlite3
+
+# Media & static
+media/
+staticfiles/
+
+# IDEs
+.vscode/
+.idea/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Swap files
+*.swp
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*,cover
+.hypothesis/
+
+# Flask (not needed but fine)
+instance/.webassets-cache
+
+# PyBuilder
+target/
+
+# pyenv
+.python-version
+
+# celery
+celerybeat-schedule
+
+# Rope
+.ropeproject
+
+# Node
+node_modules/
+package-lock.json
+
+# Project specific
+FusionIIIT/static/

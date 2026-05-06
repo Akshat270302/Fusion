@@ -69,6 +69,9 @@ from django.http import JsonResponse
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
 import json
+import csv
+import io
+import zipfile
 
 from django.utils.decorators import method_decorator
 from django.contrib.auth.decorators import user_passes_test
@@ -110,6 +113,24 @@ def _require_super_admin(user):
     if is_superuser(user):
         return None
     return Response({'error': 'Only Super Admin can perform this action.'}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _extract_hall_id(request):
+    hall_id = (request.query_params.get('hall_id') or '').strip()
+    if hall_id:
+        return hall_id
+    if hasattr(request, 'data'):
+        return (request.data.get('hall_id') or '').strip()
+    return ''
+
+
+def _require_hall_for_super_admin(request):
+    if not is_superuser(request.user):
+        return None, None
+    hall_id = _extract_hall_id(request)
+    if not hall_id:
+        return None, Response({'error': 'hall_id is required for super admin requests.'}, status=status.HTTP_400_BAD_REQUEST)
+    return hall_id, None
 
 
 def authorizeRoles(*allowed_roles):
@@ -202,37 +223,45 @@ def get_batches(request):
 @api_view(['POST'])
 @authentication_classes([TokenAuthentication])
 @permission_classes([IsAuthenticated])
-def batch_assign(request):
+def get_guards(request):
     permission_error = _require_super_admin(request.user)
     if permission_error:
         return permission_error
 
-    hall_id = (request.data.get('hall_id') or request.data.get('selectedHall') or '').strip()
-    batch_name = (request.data.get('batch') or request.data.get('selectedBatch') or '').strip()
-    academic_session = (request.data.get('academic_session') or request.data.get('academicSession') or '').strip()
-    document = request.FILES.get('document') or request.FILES.get('file')
-
-    if not hall_id or not batch_name or not academic_session:
-        return Response({'error': 'Please fill all required fields.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if REQUIRE_BATCH_DOCUMENT and not document:
-        return Response({'error': 'Please upload required document.'}, status=status.HTTP_400_BAD_REQUEST)
-
     try:
-        hall = Hall.objects.get(hall_id=hall_id)
-    except Hall.DoesNotExist:
-        return Response({'error': f'Hall with ID {hall_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-    if hall.operational_status != HostelOperationalStatus.ACTIVE:
-        return Response(
-            {'error': 'Cannot assign batch to an inactive hostel.'},
-            status=status.HTTP_400_BAD_REQUEST,
+        # Get staff with guard or security designation
+        guard_user_ids = list(
+            HoldsDesignation.objects.filter(
+                designation__name__iregex=r'guard|security'
+            ).values_list('working_id', flat=True)
         )
 
-    if hall.max_accomodation <= 0:
-        return Response({'error': 'Hostel configuration is incomplete.'}, status=status.HTTP_400_BAD_REQUEST)
+        guards_payload = []
+        staff_qs = Staff.objects.select_related('id__user').all()
+        
+        if guard_user_ids:
+            scoped = staff_qs.filter(id__user__id__in=guard_user_ids)
+            if scoped.exists():
+                staff_qs = scoped
+        
+        for staff in staff_qs.order_by('id__user__username'):
+            try:
+                if staff.id and staff.id.user:
+                    guards_payload.append(
+                        {
+                            'staff_id': staff.id,
+                            'username': staff.id.user.username,
+                            'full_name': f"{staff.id.user.first_name} {staff.id.user.last_name}".strip() or staff.id.user.username,
+                            'email': staff.id.user.email,
+                        }
+                    )
+            except (AttributeError, Exception):
+                # Skip staff with broken relationships
+                continue
 
-    try:
+        return Response({'guard_staff': guards_payload}, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': f'Failed to load guards: {str(exc)}'}, status=status.HTTP_400_BAD_REQUEST)
         batch_year = int(str(batch_name).strip())
     except (TypeError, ValueError):
         return Response(
@@ -424,6 +453,45 @@ def get_wardens(request):
         )
 
     return Response({'halls': halls_payload, 'warden_usernames': wardens_payload}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def get_guards(request):
+    permission_error = _require_super_admin(request.user)
+    if permission_error:
+        return permission_error
+
+    try:
+        # Get staff with guard or security designation
+        guard_user_ids = list(
+            HoldsDesignation.objects.filter(
+                designation__name__iregex=r'guard|security'
+            ).values_list('working_id', flat=True)
+        )
+
+        guards_payload = []
+        staff_qs = Staff.objects.select_related('id__user').all()
+        
+        if guard_user_ids:
+            scoped = staff_qs.filter(id__user__id__in=guard_user_ids)
+            if scoped.exists():
+                staff_qs = scoped
+        
+        for staff in staff_qs.order_by('id__user__username'):
+            guards_payload.append(
+                {
+                    'staff_id': str(staff.pk),
+                    'username': staff.id.user.username,
+                    'full_name': f"{staff.id.user.first_name} {staff.id.user.last_name}".strip() or staff.id.user.username,
+                    'email': staff.id.user.email,
+                }
+            )
+
+        return Response({'guard_staff': guards_payload}, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
@@ -1533,10 +1601,16 @@ def getNoticesController(request):
 
 def _get_notices_response(request):
     """Internal notice-list handler shared by notice endpoints."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        notices = services.getAllNoticesService(user=request.user)
+        notices = services.getAllNoticesService(user=request.user, hall_id=hall_id)
     except services.UserHallMappingMissingError as exc:
         return Response({'error': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+    except services.InvalidOperationError as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     data = [
         {
             'id': notice.id,
@@ -3392,13 +3466,548 @@ def allocateRoomChangeRequestController(request, request_id):
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitExtendedStayRequestController(request):
+    """Student submits extended stay request."""
+    try:
+        payload = services.submitExtendedStayRequestService(
+            user=request.user,
+            start_date=date.fromisoformat(request.data.get('start_date', '')),
+            end_date=date.fromisoformat(request.data.get('end_date', '')),
+            reason=request.data.get('reason', ''),
+            faculty_authorization=request.data.get('faculty_authorization', ''),
+        )
+        return Response(
+            {
+                'message': 'Extended stay request submitted successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def myExtendedStayRequestsController(request):
+    """Student views own extended stay request history."""
+    try:
+        payload = services.getMyExtendedStayRequestsService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def modifyExtendedStayRequestController(request, request_id):
+    """Student modifies pending extended stay request."""
+    try:
+        payload = services.modifyExtendedStayRequestService(
+            user=request.user,
+            request_id=request_id,
+            start_date=date.fromisoformat(request.data.get('start_date', '')),
+            end_date=date.fromisoformat(request.data.get('end_date', '')),
+            reason=request.data.get('reason', ''),
+            faculty_authorization=request.data.get('faculty_authorization', ''),
+        )
+        return Response(
+            {
+                'message': 'Extended stay request updated successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def cancelExtendedStayRequestController(request, request_id):
+    """Student cancels pending extended stay request."""
+    try:
+        payload = services.cancelExtendedStayRequestService(
+            user=request.user,
+            request_id=request_id,
+            cancel_reason=request.data.get('cancel_reason', ''),
+        )
+        return Response(
+            {
+                'message': 'Extended stay request cancelled successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def extendedStayRequestsForReviewController(request):
+    """Caretaker/Warden fetch extended stay requests for review."""
+    statuses = request.query_params.getlist('status')
+    statuses = [value for value in statuses if value]
+    try:
+        payload = services.getExtendedStayRequestsForReviewService(
+            user=request.user,
+            statuses=statuses or None,
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerExtendedStayDecisionController(request, request_id):
+    """Caretaker submits decision on extended stay request."""
+    try:
+        payload = services.caretakerReviewExtendedStayRequestService(
+            user=request.user,
+            extended_stay_request_id=request_id,
+            decision=request.data.get('decision', ''),
+            remarks=request.data.get('remarks', ''),
+        )
+        return Response(
+            {
+                'message': 'Caretaker decision recorded successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def wardenExtendedStayDecisionController(request, request_id):
+    """Warden submits decision on extended stay request."""
+    try:
+        payload = services.wardenReviewExtendedStayRequestService(
+            user=request.user,
+            extended_stay_request_id=request_id,
+            decision=request.data.get('decision', ''),
+            remarks=request.data.get('remarks', ''),
+        )
+        return Response(
+            {
+                'message': 'Warden decision recorded successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def generateRoomVacationChecklistController(request):
+    """Student generates clearance checklist preview before room vacation submission."""
+    try:
+        payload = services.generateRoomVacationChecklistService(
+            user=request.user,
+            intended_vacation_date=date.fromisoformat(request.data.get('intended_vacation_date', '')),
+            reason=request.data.get('reason', ''),
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitRoomVacationRequestController(request):
+    """Student submits room vacation request with acknowledged checklist."""
+    try:
+        payload = services.submitRoomVacationRequestService(
+            user=request.user,
+            intended_vacation_date=date.fromisoformat(request.data.get('intended_vacation_date', '')),
+            reason=request.data.get('reason', ''),
+            checklist_acknowledged=bool(request.data.get('checklist_acknowledged', False)),
+        )
+        return Response(
+            {
+                'message': 'Room vacation request submitted successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def myRoomVacationRequestsController(request):
+    """Student views own room vacation request history."""
+    try:
+        payload = services.getMyRoomVacationRequestsService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def roomVacationRequestsForClearanceController(request):
+    """Caretaker fetches room vacation requests for clearance verification."""
+    statuses = request.query_params.getlist('status')
+    statuses = [value for value in statuses if value]
+    try:
+        payload = services.getRoomVacationRequestsForClearanceService(
+            user=request.user,
+            statuses=statuses or None,
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def caretakerVerifyRoomVacationController(request, request_id):
+    """Caretaker approves clearance or requests corrections after checklist verification."""
+    try:
+        payload = services.caretakerVerifyRoomVacationService(
+            user=request.user,
+            request_id=request_id,
+            decision=request.data.get('decision', ''),
+            caretaker_review_comments=request.data.get('caretaker_review_comments', ''),
+            room_inspection_notes=request.data.get('room_inspection_notes', ''),
+            room_damages_found=bool(request.data.get('room_damages_found', False)),
+            room_damage_description=request.data.get('room_damage_description', ''),
+            room_damage_fine_amount=request.data.get('room_damage_fine_amount', 0),
+            borrowed_items_notes=request.data.get('borrowed_items_notes', ''),
+            behavior_notes=request.data.get('behavior_notes', ''),
+            checklist_updates=request.data.get('checklist_updates', []),
+        )
+        return Response(
+            {
+                'message': 'Vacation clearance review submitted successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def roomVacationRequestsForFinalizationController(request):
+    """Super admin fetches room vacation requests for finalization."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
+    statuses = request.query_params.getlist('status')
+    statuses = [value for value in statuses if value]
+    try:
+        payload = services.getRoomVacationRequestsForFinalizationService(
+            user=request.user,
+            statuses=statuses or None,
+            hall_id=hall_id,
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def finalizeRoomVacationController(request, request_id):
+    """Super admin finalizes room vacation after clearance approval."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
+    try:
+        payload = services.finalizeRoomVacationService(
+            user=request.user,
+            request_id=request_id,
+            confirm=bool(request.data.get('confirm', False)),
+            hall_id=hall_id,
+        )
+        return Response(
+            {
+                'message': 'Room vacation finalized successfully.',
+                'request': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def generateHostelReportController(request):
+    """Generate hostel report by report type/date/filters."""
+    try:
+        payload = services.generateHostelReportService(
+            user=request.user,
+            report_type=request.data.get('report_type', ''),
+            start_date=date.fromisoformat(request.data.get('start_date', '')),
+            end_date=date.fromisoformat(request.data.get('end_date', '')),
+            filters=request.data.get('filters', {}),
+            title=request.data.get('title', ''),
+            hall_id=request.data.get('hall_id'),
+            template_id=request.data.get('template_id'),
+        )
+        return Response(payload, status=status.HTTP_201_CREATED)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def myHostelReportsController(request):
+    """List report history for current user."""
+    try:
+        payload = services.listMyHostelReportsService(user=request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def reportFilterTemplatesController(request):
+    """List or save report filter templates for current user."""
+    try:
+        if request.method == 'GET':
+            payload = services.listReportFilterTemplatesService(
+                user=request.user,
+                report_type=request.query_params.get('report_type'),
+            )
+            return Response(payload, status=status.HTTP_200_OK)
+
+        payload = services.saveReportFilterTemplateService(
+            user=request.user,
+            template_name=request.data.get('template_name', ''),
+            report_type=request.data.get('report_type', ''),
+            filters=request.data.get('filters', {}),
+        )
+        return Response(payload, status=status.HTTP_201_CREATED)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submitHostelReportController(request, report_id):
+    """Warden submits draft report to super admin."""
+    try:
+        payload = services.submitHostelReportToSuperAdminService(
+            user=request.user,
+            report_id=report_id,
+            submission_notes=request.data.get('submission_notes', ''),
+            priority=request.data.get('priority', 'Normal'),
+            supporting_documents=request.FILES.getlist('supporting_documents'),
+        )
+        return Response(
+            {
+                'message': 'Report submitted to Super Admin successfully.',
+                'report': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def submittedHostelReportsController(request):
+    """Super admin list of submitted reports for review."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
+    statuses = request.query_params.getlist('status')
+    statuses = [value for value in statuses if value]
+    try:
+        payload = services.listSubmittedHostelReportsService(
+            user=request.user,
+            statuses=statuses or None,
+            hall_id=hall_id,
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def hostelReportDetailController(request, report_id):
+    """Detailed report payload for creator/super admin review."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
+    try:
+        payload = services.getHostelReportDetailService(
+            user=request.user,
+            report_id=report_id,
+            log_view=True,
+            hall_id=hall_id,
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def reviewHostelReportController(request, report_id):
+    """Super admin approves report or requests revision with feedback."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
+    try:
+        payload = services.reviewSubmittedHostelReportService(
+            user=request.user,
+            report_id=report_id,
+            decision=request.data.get('decision', ''),
+            feedback=request.data.get('feedback', ''),
+            hall_id=hall_id,
+        )
+        return Response(
+            {
+                'message': 'Report review submitted successfully.',
+                'report': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _build_csv_for_report(report_payload):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    writer.writerow(['Report UID', report_payload.get('report_uid')])
+    writer.writerow(['Title', report_payload.get('title')])
+    writer.writerow(['Type', report_payload.get('report_type')])
+    writer.writerow(['Hall', report_payload.get('hall_id')])
+    writer.writerow(['Date Range', f"{report_payload.get('start_date')} to {report_payload.get('end_date')}"])
+    writer.writerow([])
+
+    report_data = report_payload.get('report_data') or {}
+    sections = report_data.get('sections') or []
+    for section in sections:
+        writer.writerow([section.get('title', 'Section')])
+        summary = section.get('summary') or {}
+        for key, value in summary.items():
+            writer.writerow([key, value])
+        rows = section.get('rows') or []
+        if rows:
+            row_keys = sorted({key for row in rows for key in row.keys()})
+            writer.writerow(row_keys)
+            for row in rows:
+                writer.writerow([row.get(key, '') for key in row_keys])
+        writer.writerow([])
+
+    return buffer.getvalue().encode('utf-8')
+
+
+@api_view(['GET'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def downloadHostelReportController(request, report_id):
+    """Download report in CSV/PDF/Both formats and log activity."""
+    download_format = (request.query_params.get('format') or 'pdf').strip().lower()
+    if download_format not in ['pdf', 'csv', 'both']:
+        return Response({'error': 'format must be pdf, csv, or both.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        payload = services.getHostelReportDetailService(
+            user=request.user,
+            report_id=report_id,
+            log_view=False,
+            hall_id=_extract_hall_id(request),
+        )
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    report_uid = payload.get('report_uid') or f'report-{report_id}'
+    csv_bytes = _build_csv_for_report(payload)
+
+    context = {
+        'report': payload,
+    }
+    pdf_response = render_to_pdf('hostelmanagement/generated_report_pdf.html', context)
+    if not pdf_response:
+        return Response({'error': 'Unable to generate PDF for report.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    pdf_bytes = pdf_response.content
+
+    services.logHostelReportDownloadService(
+        user=request.user,
+        report_id=report_id,
+        download_format=download_format,
+        hall_id=_extract_hall_id(request),
+    )
+
+    if download_format == 'csv':
+        response = HttpResponse(csv_bytes, content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="{report_uid}.csv"'
+        return response
+
+    if download_format == 'pdf':
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{report_uid}.pdf"'
+        return response
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f'{report_uid}.csv', csv_bytes)
+        archive.writestr(f'{report_uid}.pdf', pdf_bytes)
+
+    response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
+    response['Content-Disposition'] = f'attachment; filename="{report_uid}.zip"'
+    return response
+
+
 @api_view(['GET'])
 @authentication_classes([SessionAuthentication, TokenAuthentication])
 @permission_classes([IsAuthenticated])
 def inventoryDashboardController(request):
     """UC-026/027/028 inventory dashboard list by role scope."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getInventoryDashboardService(user=request.user)
+        payload = services.getInventoryDashboardService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3431,8 +4040,12 @@ def submitInventoryInspectionController(request):
 @permission_classes([IsAuthenticated])
 def inventoryInspectionsController(request):
     """List inventory inspection records."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getInventoryInspectionsService(user=request.user)
+        payload = services.getInventoryInspectionsService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3466,8 +4079,12 @@ def submitResourceRequirementRequestController(request):
 @permission_classes([IsAuthenticated])
 def resourceRequirementRequestsController(request):
     """List resource requirement requests for review/track."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getResourceRequestsService(user=request.user)
+        payload = services.getResourceRequestsService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -3478,12 +4095,17 @@ def resourceRequirementRequestsController(request):
 @permission_classes([IsAuthenticated])
 def reviewResourceRequirementRequestController(request, request_id):
     """Warden/admin reviews resource request."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
         payload = services.reviewResourceRequestService(
             user=request.user,
             request_id=request_id,
             decision=request.data.get('decision', ''),
             remarks=request.data.get('remarks', ''),
+            hall_id=hall_id,
         )
         return Response(
             {
@@ -3525,9 +4147,122 @@ def updateInventoryRecordController(request, inventory_id):
 @permission_classes([IsAuthenticated])
 def inventoryUpdateLogsController(request):
     """List inventory update logs for audit."""
+    hall_id, hall_error = _require_hall_for_super_admin(request)
+    if hall_error:
+        return hall_error
+
     try:
-        payload = services.getInventoryUpdateLogsService(user=request.user)
+        payload = services.getInventoryUpdateLogsService(user=request.user, hall_id=hall_id)
         return Response(payload, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ══════════════════════════════════════════════════════════════
+# GUARD DUTY MANAGEMENT CONTROLLERS
+# ══════════════════════════════════════════════════════════════
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin', 'warden', 'caretaker')
+def guardDutySchedulesController(request):
+    """Super admin manages guard schedules; warden/caretaker can view schedules."""
+    try:
+        if request.method == 'GET':
+            payload = services.getGuardDutySchedulesService(
+                user=request.user,
+                hall_id=_extract_hall_id(request),
+                day=request.query_params.get('day', ''),
+            )
+            return Response(payload, status=status.HTTP_200_OK)
+
+        override_policy = str(request.data.get('override_policy', 'false')).strip().lower() in {'1', 'true', 'yes'}
+        payload = services.createGuardDutyScheduleService(
+            user=request.user,
+            hall_id=_extract_hall_id(request),
+            staff_id=request.data.get('staff_id'),
+            day=request.data.get('day'),
+            start_time=request.data.get('start_time'),
+            end_time=request.data.get('end_time'),
+            override_policy=override_policy,
+        )
+        return Response({'message': 'Guard duty schedule saved successfully.', 'schedule': payload}, status=status.HTTP_201_CREATED)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['PATCH', 'DELETE'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin')
+def guardDutyScheduleDetailController(request, schedule_id):
+    """Update or delete a guard duty schedule entry by super admin."""
+    try:
+        hall_id = _extract_hall_id(request)
+        if request.method == 'PATCH':
+            override_policy = str(request.data.get('override_policy', 'false')).strip().lower() in {'1', 'true', 'yes'}
+            payload = services.updateGuardDutyScheduleService(
+                user=request.user,
+                schedule_id=schedule_id,
+                hall_id=hall_id,
+                staff_id=request.data.get('staff_id'),
+                day=request.data.get('day'),
+                start_time=request.data.get('start_time'),
+                end_time=request.data.get('end_time'),
+                override_policy=override_policy,
+            )
+            return Response({'message': 'Guard duty schedule updated successfully.', 'schedule': payload}, status=status.HTTP_200_OK)
+
+        services.deleteGuardDutyScheduleService(
+            user=request.user,
+            schedule_id=schedule_id,
+            hall_id=hall_id,
+        )
+        return Response({'message': 'Guard duty schedule removed successfully.'}, status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin', 'warden', 'caretaker')
+def guardDutyConcernsController(request):
+    """Warden/caretaker raise concerns; all authorized roles can view scoped concerns."""
+    try:
+        if request.method == 'GET':
+            payload = services.listGuardDutyConcernsService(
+                user=request.user,
+                hall_id=_extract_hall_id(request),
+            )
+            return Response({'concerns': payload}, status=status.HTTP_200_OK)
+
+        payload = services.raiseGuardDutyConcernService(
+            user=request.user,
+            subject=request.data.get('subject', ''),
+            message=request.data.get('message', ''),
+        )
+        return Response({'message': 'Guard duty concern submitted to super admin.', 'concern': payload}, status=status.HTTP_201_CREATED)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
+@permission_classes([IsAuthenticated])
+@authorizeRoles('super_admin')
+def resolveGuardDutyConcernController(request, concern_id):
+    """Super admin resolves a guard duty concern."""
+    try:
+        payload = services.resolveGuardDutyConcernService(
+            user=request.user,
+            concern_id=concern_id,
+            hall_id=_extract_hall_id(request),
+            response_notes=request.data.get('response_notes', ''),
+        )
+        return Response({'message': 'Guard duty concern resolved successfully.', 'concern': payload}, status=status.HTTP_200_OK)
     except Exception as exc:
         return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

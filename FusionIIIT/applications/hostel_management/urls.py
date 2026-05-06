@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .api import views as api_views
 from django.contrib.auth import views as auth_views
 from django.urls import include
 from django.contrib import admin
@@ -46,7 +47,7 @@ urlpatterns = [
     path('student/notices/', views.student_notice_board, name='student_notice_board'),
     # Batch management APIs (HM-UC-NEW-017)
     path('get_batches/', views.get_batches, name='get_batches'),
-    path('batch-assign/', views.batch_assign, name='batch_assign'),
+    path('batch-assign/', api_views.assign_batch, name='batch_assign'),
     path('workflow/dashboard/', views.hostel_workflow_dashboard, name='hostel_workflow_dashboard'),
     path('workflow/<str:hall_id>/eligible-students/', views.hostel_workflow_eligible_students, name='hostel_workflow_eligible_students'),
     path('workflow/<str:hall_id>/bulk-allot/', views.hostel_workflow_bulk_allot, name='hostel_workflow_bulk_allot'),
@@ -55,6 +56,7 @@ urlpatterns = [
     path('assign_caretakers/', views.assign_caretakers, name='assign_caretakers'),
     path('get_wardens/', views.get_wardens, name='get_wardens'),
     path('assign_warden/', views.assign_warden, name='assign_warden'),
+    path('get_guards/', views.get_guards, name='get_guards'),
     # Leave management APIs (new)
     path('leave/apply/', views.submitLeaveRequestController, name='submit_leave_request'),
     path('leave/my-requests/', views.getStudentLeavesController, name='get_student_leave_requests'),
@@ -78,6 +80,31 @@ urlpatterns = [
     path('room-change/requests/<int:request_id>/allocate/', views.allocateRoomChangeRequestController, name='allocate_room_change_request'),
     path('room-change/approve/', views.approveRoomChangeRequestController, name='approve_room_change_request'),
     path('room-change/reject/', views.rejectRoomChangeRequestController, name='reject_room_change_request'),
+    # Extended stay management APIs (UC-038, UC-039)
+    path('extended-stay/requests/submit/', views.submitExtendedStayRequestController, name='submit_extended_stay_request'),
+    path('extended-stay/requests/my/', views.myExtendedStayRequestsController, name='my_extended_stay_requests'),
+    path('extended-stay/requests/<int:request_id>/modify/', views.modifyExtendedStayRequestController, name='modify_extended_stay_request'),
+    path('extended-stay/requests/<int:request_id>/cancel/', views.cancelExtendedStayRequestController, name='cancel_extended_stay_request'),
+    path('extended-stay/requests/review/', views.extendedStayRequestsForReviewController, name='extended_stay_requests_review'),
+    path('extended-stay/requests/<int:request_id>/caretaker-decision/', views.caretakerExtendedStayDecisionController, name='caretaker_extended_stay_decision'),
+    path('extended-stay/requests/<int:request_id>/warden-decision/', views.wardenExtendedStayDecisionController, name='warden_extended_stay_decision'),
+    # Room vacation APIs (UC-029, UC-030, UC-031)
+    path('room-vacation/checklist/generate/', views.generateRoomVacationChecklistController, name='generate_room_vacation_checklist'),
+    path('room-vacation/requests/submit/', views.submitRoomVacationRequestController, name='submit_room_vacation_request'),
+    path('room-vacation/requests/my/', views.myRoomVacationRequestsController, name='my_room_vacation_requests'),
+    path('room-vacation/requests/clearance/', views.roomVacationRequestsForClearanceController, name='room_vacation_requests_clearance'),
+    path('room-vacation/requests/<int:request_id>/clearance/verify/', views.caretakerVerifyRoomVacationController, name='caretaker_verify_room_vacation'),
+    path('room-vacation/requests/finalization/', views.roomVacationRequestsForFinalizationController, name='room_vacation_requests_finalization'),
+    path('room-vacation/requests/<int:request_id>/finalize/', views.finalizeRoomVacationController, name='finalize_room_vacation'),
+    # Report generation/submission/review APIs (UC-034, UC-035)
+    path('reports/generate/', views.generateHostelReportController, name='generate_hostel_report'),
+    path('reports/my/', views.myHostelReportsController, name='my_hostel_reports'),
+    path('reports/templates/', views.reportFilterTemplatesController, name='report_filter_templates'),
+    path('reports/<int:report_id>/submit/', views.submitHostelReportController, name='submit_hostel_report'),
+    path('reports/submitted/', views.submittedHostelReportsController, name='submitted_hostel_reports'),
+    path('reports/<int:report_id>/', views.hostelReportDetailController, name='hostel_report_detail'),
+    path('reports/<int:report_id>/review/', views.reviewHostelReportController, name='review_hostel_report'),
+    path('reports/<int:report_id>/download/', views.downloadHostelReportController, name='download_hostel_report'),
     # Inventory management APIs (UC-026, UC-027, UC-028)
     path('inventory/dashboard/', views.inventoryDashboardController, name='inventory_dashboard'),
     path('inventory/inspections/submit/', views.submitInventoryInspectionController, name='inventory_inspection_submit'),
@@ -87,6 +114,11 @@ urlpatterns = [
     path('inventory/resource-requests/<int:request_id>/review/', views.reviewResourceRequirementRequestController, name='inventory_resource_request_review'),
     path('inventory/items/<int:inventory_id>/update/', views.updateInventoryRecordController, name='inventory_item_update'),
     path('inventory/update-logs/', views.inventoryUpdateLogsController, name='inventory_update_logs'),
+    # Guard duty management APIs (UC-024, UC-025)
+    path('guard-duties/schedules/', views.guardDutySchedulesController, name='guard_duty_schedules'),
+    path('guard-duties/schedules/<int:schedule_id>/', views.guardDutyScheduleDetailController, name='guard_duty_schedule_detail'),
+    path('guard-duties/concerns/', views.guardDutyConcernsController, name='guard_duty_concerns'),
+    path('guard-duties/concerns/<int:concern_id>/resolve/', views.resolveGuardDutyConcernController, name='resolve_guard_duty_concern'),
     # Student allotment compatibility aliases for current frontend
     path('students_get_students_info/', views.searchStudentsController, name='students_get_students_info_alias'),
     path('caretaker_get_students_info/', views.searchStudentsController, name='caretaker_get_students_info_alias'),

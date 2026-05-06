@@ -80,12 +80,12 @@ class BaseModuleTestCase(TestCase):
 
         # Create Rooms (needed by room allocation, room change, guest booking endpoints)
         cls.hall_room = HallRoom.objects.create(
-            hall=cls.hall, room_number='A-101', block_number='A',
-            capacity=1, room_type='single', status='available'
+            hall=cls.hall, room_no='A101', block_no='A',
+            room_cap=1, room_occupied=0
         )
         cls.guest_room = GuestRoom.objects.create(
-            hall=cls.hall, room_number='G-01',
-            room_type='single', capacity=1, status='available'
+            hall=cls.hall, room='G-01',
+            room_type='single', vacant=True
         )
 
         # Assign caretaker & warden to hall

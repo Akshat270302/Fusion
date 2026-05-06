@@ -495,18 +495,48 @@ def hostel_notifications(sender, recipient, type):
         verb = "Your room has been re-allotted successfully."
     elif type == "inventory_request":
         verb = "You have a new inventory resource request for review."
+    elif type == "inventory_request_submitted":
+        verb = "Your inventory resource request has been submitted successfully."
     elif type == "inventory_request_approved":
         verb = "Your inventory resource request has been approved."
     elif type == "inventory_request_rejected":
         verb = "Your inventory resource request has been rejected."
+    elif type == "extendedStay_request":
+        verb = "You have a new extended stay request for review."
+    elif type == "extendedStay_modified":
+        verb = "An extended stay request has been modified and needs your review."
+    elif type == "extendedStay_approved":
+        verb = "Your extended stay request has been approved."
+    elif type == "extendedStay_rejected":
+        verb = "Your extended stay request has been rejected."
+    elif type == "extendedStay_reviewed":
+        verb = "Your extended stay request has been reviewed."
     elif type == "warden_assignment":
         verb = "You have been assigned as a Hostel Warden."
     elif type == "caretaker_assignment":
         verb = "You have been assigned as a Hostel Caretaker."
+    elif type == "group_created":
+        verb = "You have been added to a hostel room group."
     elif type == "room_allotted":
         verb = "Your hostel room has been allotted."
     elif type == "caretaker_bulk_allotment":
         verb = "Bulk room allotment has been completed for your hostel."
+    elif type == "roomVacation_request":
+        verb = "A new room vacation request is awaiting clearance review."
+    elif type == "roomVacation_corrections_required":
+        verb = "Your room vacation clearance requires additional actions/corrections."
+    elif type == "roomVacation_clearance_approved":
+        verb = "Your room vacation clearance has been approved."
+    elif type == "roomVacation_completed":
+        verb = "Your room vacation has been finalized successfully."
+    elif type == "report_submitted_superadmin":
+        verb = "A hostel report has been submitted for your review."
+    elif type == "report_feedback_approved":
+        verb = "Your submitted hostel report has been approved by Super Admin."
+    elif type == "report_feedback_revision_requested":
+        verb = "Your submitted hostel report needs revision. Please review feedback."
+    else:
+        verb = "You have a new update from Hostel Management."
     
     notify.send(sender=sender,recipient=recipient,url=url,module=module,verb=verb)
     

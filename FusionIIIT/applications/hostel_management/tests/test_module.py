@@ -26,6 +26,8 @@ from ..models import (
     LeaveStatus,
     FineStatus,
     BookingStatus,
+    StaffSchedule,
+    UserHostelMapping,
 )
 from .. import selectors, services
 from ..services import (
@@ -410,3 +412,5 @@ class HallManagementIntegrationTests(TestCase):
         # Verify in list
         all_halls = selectors.get_all_halls()
         self.assertIn(hall, all_halls)
+
+

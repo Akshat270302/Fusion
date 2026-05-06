@@ -59,7 +59,6 @@ from .serializers import (
     ComplaintCreateSerializer,
     HostelFineSerializer,
     ImposeFineSerializer,
-    UpdateFineSerializer,
     HostelInventorySerializer,
     InventoryCreateSerializer,
     WorkerReportSerializer,
